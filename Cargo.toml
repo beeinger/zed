@@ -248,6 +248,15 @@ members = [
     "crates/ztracing_macro",
 
     #
+    # FORK:overlay-crates — always-on session host (keep as a 4-crate block)
+    #
+    "overlay/crates/session_client",
+    "overlay/crates/session_host",
+    "overlay/crates/session_protocol",
+    "overlay/crates/session_transport",
+    # FORK:end
+
+    #
     # Extensions
     #
 
@@ -451,6 +460,12 @@ sandbox = { path = "crates/sandbox" }
 scheduler = { path = "crates/scheduler" }
 search = { path = "crates/search" }
 session = { path = "crates/session" }
+# FORK:overlay-crates
+session_client = { path = "overlay/crates/session_client" }
+session_host = { path = "overlay/crates/session_host" }
+session_protocol = { path = "overlay/crates/session_protocol" }
+session_transport = { path = "overlay/crates/session_transport" }
+# FORK:end
 settings = { path = "crates/settings" }
 settings_content = { path = "crates/settings_content" }
 settings_json = { path = "crates/settings_json", default-features = false }
