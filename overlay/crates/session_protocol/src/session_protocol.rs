@@ -4,14 +4,23 @@
 //! a handful of Envelope messages rather than growing `zed.proto` with a full
 //! agent API.
 
+mod acp_tunnel;
 mod coalesce;
 mod daemon_id;
+mod event_log;
 mod event_seq;
+mod jsonrpc;
 mod permission;
 
+pub use acp_tunnel::{CatchUpResponse, JsonRpcLine, SubscribeRequest};
 pub use coalesce::CoalesceConfig;
 pub use daemon_id::{DAEMON_ID_BODY_LEN, daemon_socket_id};
+pub use event_log::EventLog;
 pub use event_seq::EventSeq;
+pub use jsonrpc::{
+    INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, JSONRPC_VERSION, JsonRpcError, JsonRpcMessage,
+    METHOD_NOT_FOUND, PARSE_ERROR, error_response, methods, notification, request, success,
+};
 pub use permission::DisconnectedPermissionPolicy;
 
 /// Placeholder so production binaries can call `session_protocol::init` at a

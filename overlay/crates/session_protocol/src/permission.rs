@@ -7,6 +7,8 @@
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DisconnectedPermissionPolicy {
     /// Honor the project's trust state (trusted worktrees allow, others deny).
+    /// The daemon currently auto-allows so a missing GUI cannot stall a turn;
+    /// trust gating belongs with worktree trust, not a window.
     #[default]
     AllowAccordingToTrust,
     /// Reject every prompt until a client reconnects.
