@@ -189,6 +189,24 @@ impl Default for LocalProjectFlags {
     }
 }
 
+/// Store handles already owned by `HeadlessProject` on the same `App`.
+/// Cloning these `Entity`s shares the stores; it does not copy their data.
+#[derive(Clone)]
+pub struct HeadlessProjectStores {
+    pub worktree_store: Entity<WorktreeStore>,
+    pub buffer_store: Entity<BufferStore>,
+    pub lsp_store: Entity<LspStore>,
+    pub git_store: Entity<GitStore>,
+    pub agent_server_store: Entity<AgentServerStore>,
+    pub task_store: Entity<TaskStore>,
+    pub dap_store: Entity<DapStore>,
+    pub breakpoint_store: Entity<BreakpointStore>,
+    pub context_server_store: Entity<ContextServerStore>,
+    pub settings_observer: Entity<SettingsObserver>,
+    pub environment: Entity<ProjectEnvironment>,
+    pub toolchain_store: Entity<ToolchainStore>,
+}
+
 pub trait ProjectItem: 'static {
     fn try_open(
         project: &Entity<Project>,
@@ -1421,6 +1439,100 @@ impl Project {
         })
     }
 
+    // FORK:session-host-init
+    /// Wrap `HeadlessProject` stores as a local `Project` on the **same** `App`.
+    ///
+    /// NativeAgent tools take `Entity<Project>`. They must mutate the daemon's
+    /// worktree/buffer/LSP stores, not a second in-process stack. GUI
+    /// `Project::remote` stays a different App and talks RPC as before.
+    pub fn from_headless_stores(
+        stores: HeadlessProjectStores,
+        client: Arc<Client>,
+        node: NodeRuntime,
+        user_store: Entity<UserStore>,
+        languages: Arc<LanguageRegistry>,
+        fs: Arc<dyn Fs>,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        cx.new(|cx: &mut Context<Self>| {
+            let (tx, rx) = mpsc::unbounded();
+            cx.spawn(async move |this, cx| Self::send_buffer_ordered_messages(this, rx, cx).await)
+                .detach();
+            let snippets = SnippetProvider::new(fs.clone(), BTreeSet::from_iter([]), cx);
+
+            cx.subscribe(&stores.worktree_store, Self::on_worktree_store_event)
+                .detach();
+            cx.subscribe(&stores.buffer_store, Self::on_buffer_store_event)
+                .detach();
+            cx.subscribe(&stores.dap_store, Self::on_dap_store_event)
+                .detach();
+            cx.subscribe(&stores.settings_observer, Self::on_settings_observer_event)
+                .detach();
+            cx.subscribe(&stores.lsp_store, Self::on_lsp_store_event)
+                .detach();
+
+            let weak_self = cx.weak_entity();
+            stores
+                .git_store
+                .update(cx, |git_store, _| git_store.set_project(weak_self));
+
+            let bookmark_store = cx.new(|cx| {
+                BookmarkStore::new(
+                    stores.worktree_store.clone(),
+                    stores.buffer_store.clone(),
+                    cx,
+                )
+            });
+            let image_store = cx.new(|cx| ImageStore::local(stores.worktree_store.clone(), cx));
+            cx.subscribe(&image_store, Self::on_image_store_event)
+                .detach();
+
+            Self {
+                buffer_ordered_messages_tx: tx,
+                collaborators: Default::default(),
+                worktree_store: stores.worktree_store,
+                buffer_store: stores.buffer_store,
+                image_store,
+                lsp_store: stores.lsp_store,
+                context_server_store: stores.context_server_store,
+                join_project_response_message_id: 0,
+                client_state: ProjectClientState::Local,
+                git_store: stores.git_store,
+                client_subscriptions: Vec::new(),
+                _subscriptions: vec![cx.on_release(Self::release)],
+                active_entry: None,
+                snippets,
+                languages,
+                collab_client: client,
+                task_store: stores.task_store,
+                user_store,
+                settings_observer: stores.settings_observer,
+                fs,
+                remote_client: None,
+                bookmark_store,
+                breakpoint_store: stores.breakpoint_store,
+                dap_store: stores.dap_store,
+                agent_server_store: stores.agent_server_store,
+                buffers_needing_diff: Default::default(),
+                git_diff_debouncer: DebouncedDelay::new(),
+                terminals: Terminals {
+                    local_handles: Vec::new(),
+                },
+                node: Some(node),
+                search_history: Self::new_search_history(),
+                environment: stores.environment,
+                remotely_created_models: Default::default(),
+                search_included_history: Self::new_search_history(),
+                search_excluded_history: Self::new_search_history(),
+                toolchain_store: Some(stores.toolchain_store),
+                agent_location: None,
+                downloading_files: Default::default(),
+                last_worktree_paths: WorktreePaths::default(),
+            }
+        })
+    }
+    // FORK:end
+
     pub fn remote(
         remote: Entity<RemoteClient>,
         client: Arc<Client>,
@@ -2255,6 +2367,11 @@ impl Project {
     #[inline]
     pub fn context_server_store(&self) -> Entity<ContextServerStore> {
         self.context_server_store.clone()
+    }
+
+    #[inline]
+    pub fn settings_observer(&self) -> Entity<SettingsObserver> {
+        self.settings_observer.clone()
     }
 
     #[inline]

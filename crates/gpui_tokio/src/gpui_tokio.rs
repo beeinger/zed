@@ -10,6 +10,11 @@ pub use tokio::task::JoinError;
 /// If you need more threads (or access to the runtime outside of GPUI), you can create the runtime
 /// yourself and pass a Handle to `init_from_handle`.
 pub fn init(cx: &mut App) {
+    // FORK:session-host-init — daemon tests and production both call this; do not replace a live runtime
+    if cx.has_global::<GlobalTokio>() {
+        return;
+    }
+    // FORK:end
     let runtime = tokio::runtime::Builder::new_multi_thread()
         // Since we now have two executors, let's try to keep our footprint small
         .worker_threads(2)

@@ -69,3 +69,21 @@ message NewExternalAgentVersionAvailable {
   string name = 2;
   string version = 3;
 }
+
+// FORK:acp-envelope — tunnel ACP JSON-RPC; do not grow a per-method agent API
+message SessionAgentRpc {
+  string json = 1;
+  // EventLog seq when this carries a persisted session/update; 0 for RPC.
+  uint64 seq = 2;
+}
+
+message SessionSubscribe {
+  uint64 last_seq = 1;
+}
+
+message SessionCatchUp {
+  uint64 from_seq = 1;
+  uint64 to_seq = 2;
+  repeated string events_json = 3;
+}
+// FORK:end

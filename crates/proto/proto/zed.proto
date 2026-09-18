@@ -523,6 +523,11 @@ message Envelope {
     ExecuteLspCommand execute_lsp_command = 491;
     ExecuteLspCommandResponse execute_lsp_command_response = 492;
     RefreshDocumentHighlights refresh_document_highlights = 493; // current max
+    // FORK:acp-envelope
+    SessionAgentRpc session_agent_rpc = 2000;
+    SessionSubscribe session_subscribe = 2001;
+    SessionCatchUp session_catch_up = 2002;
+    // FORK:end
   }
 
   reserved 87 to 88;

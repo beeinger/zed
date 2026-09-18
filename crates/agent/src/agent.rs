@@ -460,7 +460,16 @@ pub struct NativeAgent {
     /// three agent-panel interaction points: input box focus, slash
     /// autocomplete, and conversation submit.
     skills_state: SkillsState,
+    // FORK:session-update-sink
+    /// Daemon host: copy turn events as ACP `session/update` (GUI is another App).
+    session_notification_sink: Option<SessionNotificationSink>,
+    /// `Some(true)` allow-once, `Some(false)` deny-once, `None` prompt the local thread.
+    auto_resolve_permissions: Option<bool>,
+    // FORK:end
 }
+
+/// ACP `session/update` callback. The bool is persist-to-event-log (live vs replay).
+pub type SessionNotificationSink = Rc<dyn Fn(acp::SessionNotification, bool, &mut App)>;
 
 #[derive(Default)]
 enum SkillsState {
@@ -626,6 +635,10 @@ impl NativeAgent {
                 fs,
                 _subscriptions: subscriptions,
                 skills_state: SkillsState::default(),
+                // FORK:session-update-sink
+                session_notification_sink: None,
+                auto_resolve_permissions: None,
+                // FORK:end
             }
         })
     }
@@ -752,6 +765,16 @@ impl NativeAgent {
     pub fn set_sibling_thread_host(&mut self, host: Rc<dyn SiblingThreadHost>) {
         self.sibling_thread_host = Some(host);
     }
+
+    // FORK:session-update-sink
+    pub fn set_session_notification_sink(&mut self, sink: SessionNotificationSink) {
+        self.session_notification_sink = Some(sink);
+    }
+
+    pub fn set_auto_resolve_permissions(&mut self, allow: Option<bool>) {
+        self.auto_resolve_permissions = allow;
+    }
+    // FORK:end
 
     pub fn sibling_thread_host(&self) -> Option<Rc<dyn SiblingThreadHost>> {
         self.sibling_thread_host.clone()
@@ -1724,6 +1747,7 @@ impl NativeAgent {
                             events,
                             acp_thread.downgrade(),
                             None,
+                            false,
                             cx,
                         )
                     })
@@ -2033,6 +2057,7 @@ impl NativeAgent {
                     response_stream,
                     acp_thread.downgrade(),
                     connection,
+                    true,
                     cx,
                 )
             })
@@ -2073,6 +2098,7 @@ impl NativeAgent {
                     response_stream,
                     acp_thread.downgrade(),
                     connection,
+                    true,
                     cx,
                 )
             })
@@ -2181,6 +2207,7 @@ impl NativeAgent {
                     response_stream,
                     acp_thread.downgrade(),
                     connection,
+                    true,
                     cx,
                 )
             })
@@ -2270,13 +2297,14 @@ impl NativeAgentConnection {
             Ok(stream) => stream,
             Err(err) => return Task::ready(Err(err)),
         };
-        Self::handle_thread_events(response_stream, acp_thread, Some(self.clone()), cx)
+        Self::handle_thread_events(response_stream, acp_thread, Some(self.clone()), true, cx)
     }
 
     fn handle_thread_events(
         mut events: mpsc::UnboundedReceiver<Result<ThreadEvent>>,
         acp_thread: WeakEntity<AcpThread>,
         connection: Option<NativeAgentConnection>,
+        persist_session_updates: bool,
         cx: &App,
     ) -> Task<Result<acp::PromptResponse>> {
         cx.spawn(async move |cx| {
@@ -2285,6 +2313,17 @@ impl NativeAgentConnection {
                 match result {
                     Ok(event) => {
                         log::trace!("Received completion event: {:?}", event);
+
+                        // FORK:session-update-sink
+                        if let Some(connection) = &connection {
+                            connection.emit_session_updates(
+                                &event,
+                                &acp_thread,
+                                persist_session_updates,
+                                cx,
+                            );
+                        }
+                        // FORK:end
 
                         match event {
                             ThreadEvent::UserMessage(message) => {
@@ -2315,6 +2354,29 @@ impl NativeAgentConnection {
                                 context: _,
                                 kind,
                             }) => {
+                                // FORK:session-update-sink — GUI death must not stall the turn
+                                let auto_resolve = connection.as_ref().and_then(|connection| {
+                                    connection
+                                        .0
+                                        .read_with(cx, |agent, _| agent.auto_resolve_permissions)
+                                });
+                                if let Some(allow) = auto_resolve {
+                                    let kind = if allow {
+                                        acp::PermissionOptionKind::AllowOnce
+                                    } else {
+                                        acp::PermissionOptionKind::RejectOnce
+                                    };
+                                    if let Some(option) = options.first_option_of_kind(kind) {
+                                        let _ = response.send(
+                                            acp_thread::SelectedPermissionOutcome::new(
+                                                option.option_id.clone(),
+                                                option.kind,
+                                            ),
+                                        );
+                                        continue;
+                                    }
+                                }
+                                // FORK:end
                                 let outcome_task = acp_thread.update(cx, |thread, cx| {
                                     thread.request_tool_call_authorization(
                                         tool_call, options, kind, cx,
@@ -2354,6 +2416,19 @@ impl NativeAgentConnection {
                                 schema,
                                 response,
                             }) => {
+                                // FORK:session-update-sink — do not wait on a window that may be gone
+                                let auto_resolve = connection.as_ref().and_then(|connection| {
+                                    connection
+                                        .0
+                                        .read_with(cx, |agent, _| agent.auto_resolve_permissions)
+                                });
+                                if auto_resolve.is_some() {
+                                    let _ = response.send(acp::CreateElicitationResponse::new(
+                                        acp::ElicitationAction::Cancel,
+                                    ));
+                                    continue;
+                                }
+                                // FORK:end
                                 let request_result = acp_thread.update(cx, |thread, cx| {
                                     let scope = acp::ElicitationSessionScope::new(
                                         thread.session_id().clone(),
@@ -2448,6 +2523,97 @@ impl NativeAgentConnection {
             log::debug!("Response stream completed");
             anyhow::Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
         })
+    }
+
+    fn emit_session_updates(
+        &self,
+        event: &ThreadEvent,
+        acp_thread: &WeakEntity<AcpThread>,
+        persist: bool,
+        cx: &mut AsyncApp,
+    ) {
+        let Some(sink) = self
+            .0
+            .read_with(cx, |agent, _| agent.session_notification_sink.clone())
+        else {
+            return;
+        };
+        let Ok(session_id) = acp_thread.read_with(cx, |thread, _| thread.session_id().clone())
+        else {
+            return;
+        };
+        let updates = session_updates_from_thread_event(event);
+        if updates.is_empty() {
+            return;
+        }
+        let _ = cx.update(|cx| {
+            for update in updates {
+                sink(
+                    acp::SessionNotification::new(session_id.clone(), update),
+                    persist,
+                    cx,
+                );
+            }
+        });
+    }
+}
+
+fn session_updates_from_thread_event(event: &ThreadEvent) -> Vec<acp::SessionUpdate> {
+    match event {
+        ThreadEvent::UserMessage(message) => message
+            .content
+            .iter()
+            .cloned()
+            .map(|content| {
+                acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(content.into()))
+            })
+            .collect(),
+        ThreadEvent::AgentText(text) => vec![acp::SessionUpdate::AgentMessageChunk(
+            acp::ContentChunk::new(text.clone().into()),
+        )],
+        ThreadEvent::AgentThinking(text) => vec![acp::SessionUpdate::AgentThoughtChunk(
+            acp::ContentChunk::new(text.clone().into()),
+        )],
+        ThreadEvent::ToolCall(tool_call) => {
+            vec![acp::SessionUpdate::ToolCall(tool_call.clone())]
+        }
+        ThreadEvent::ToolCallUpdate(acp_thread::ToolCallUpdate::UpdateFields(update)) => {
+            vec![acp::SessionUpdate::ToolCallUpdate(update.clone())]
+        }
+        ThreadEvent::Stop(_)
+        | ThreadEvent::ToolCallAuthorization(_)
+        | ThreadEvent::ToolCallAuthorizationResolved { .. }
+        | ThreadEvent::Elicitation(_)
+        | ThreadEvent::SubagentSpawned(_)
+        | ThreadEvent::Retry(_)
+        | ThreadEvent::ContextCompaction(_)
+        | ThreadEvent::ContextCompactionUpdate(_)
+        | ThreadEvent::ToolCallUpdate(_) => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod session_update_sink_tests {
+    use super::*;
+
+    #[test]
+    fn agent_text_becomes_message_chunk() {
+        let updates = session_updates_from_thread_event(&ThreadEvent::AgentText("hi".into()));
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            acp::SessionUpdate::AgentMessageChunk(chunk) => {
+                assert_eq!(chunk.content, acp::ContentBlock::from("hi".to_string()));
+            }
+            other => panic!("unexpected update: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stop_is_not_a_session_update() {
+        assert!(
+            session_updates_from_thread_event(&ThreadEvent::Stop(acp::StopReason::EndTurn))
+                .is_empty()
+        );
     }
 }
 
@@ -4516,6 +4682,7 @@ mod internal_tests {
                         response_stream,
                         acp_thread.downgrade(),
                         Some(connection.as_ref().clone()),
+                        true,
                         cx,
                     )
                 })
