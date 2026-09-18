@@ -35,7 +35,10 @@ markers; if a marker disappeared, stop and restore it from `TOUCHPOINTS.md`.
 | `crates/remote_server/src/server.rs` | Attach-not-kill, no idle quit |
 | `crates/remote_server/src/headless_project.rs` | `session_host::init` hook, ignore UI shutdown |
 | `crates/project/src/project.rs` | No `ShutdownRemoteServer` on GUI quit |
-| `crates/workspace/src/workspace.rs` | Stable daemon identifier |
+| `crates/workspace/src/workspace.rs` | Stable daemon identifier, local same-host |
+| `crates/workspace/src/persistence.rs` | Persist `RemoteConnectionKind::Local` |
+| `crates/remote/src/transport.rs` | `pub mod local`, pub stdio helper |
+| `crates/zed/src/main.rs` | `session_transport::init` |
 | `crates/agent_ui/src/agent_ui.rs` | Remote native-agent connection |
 | `crates/remote_server/Cargo.toml` | `session_host` / `agent` prod deps |
 | `crates/zed/Cargo.toml` | `session_client` / `session_transport` |

@@ -22,8 +22,15 @@ pub enum RemoteConnectionIdentity {
         name: String,
         remote_user: String,
     },
+    // FORK:local-transport
+    Local {
+        project_root: String,
+    },
+    // FORK:end
     #[cfg(any(test, feature = "test-support"))]
-    Mock { id: u64 },
+    Mock {
+        id: u64,
+    },
 }
 
 impl RemoteConnectionIdentity {
@@ -51,6 +58,9 @@ impl RemoteConnectionIdentity {
                 name,
                 remote_user,
             } => format!("docker:{remote_user}@{name}:{container_id}"),
+            // FORK:local-transport
+            Self::Local { project_root } => format!("local:localhost:{project_root}"),
+            // FORK:end
             #[cfg(any(test, feature = "test-support"))]
             Self::Mock { id } => format!("mock:{id}"),
         }
@@ -74,6 +84,11 @@ impl From<&RemoteConnectionOptions> for RemoteConnectionIdentity {
                 name: options.name.clone(),
                 remote_user: options.remote_user.clone(),
             },
+            // FORK:local-transport
+            RemoteConnectionOptions::Local(options) => Self::Local {
+                project_root: options.identity_project_root(),
+            },
+            // FORK:end
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionOptions::Mock(options) => Self::Mock { id: options.id },
         }
@@ -188,11 +203,24 @@ mod tests {
 
     #[test]
     fn local_identity_matches_only_local_identity() {
+        use crate::LocalConnectionOptions;
+        use std::path::PathBuf;
+
+        let left = RemoteConnectionOptions::Local(LocalConnectionOptions {
+            project_root: PathBuf::from("/tmp/app/"),
+            nickname: Some("work".to_string()),
+        });
+        let right = RemoteConnectionOptions::Local(LocalConnectionOptions {
+            project_root: PathBuf::from("/tmp/app"),
+            nickname: None,
+        });
+        assert!(same_remote_connection_identity(Some(&left), Some(&right)));
+
         let remote = RemoteConnectionOptions::Wsl(WslConnectionOptions {
             distro_name: "Ubuntu".to_string(),
             user: Some("anth".to_string()),
         });
-
+        assert!(!same_remote_connection_identity(Some(&left), Some(&remote)));
         assert!(same_remote_connection_identity(None, None));
         assert!(!same_remote_connection_identity(None, Some(&remote)));
     }

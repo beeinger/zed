@@ -319,6 +319,11 @@ pub async fn open_remote_project(
                                 RemoteConnectionOptions::Docker(_) => {
                                     "Failed to connect to Dev Container"
                                 }
+                                // FORK:local-transport
+                                RemoteConnectionOptions::Local(_) => {
+                                    "Failed to connect to local session host"
+                                }
+                                // FORK:end
                                 #[cfg(any(test, feature = "test-support"))]
                                 RemoteConnectionOptions::Mock(_) => {
                                     "Failed to connect to mock server"
@@ -380,6 +385,11 @@ pub async fn open_remote_project(
                                 RemoteConnectionOptions::Docker(_) => {
                                     "Failed to connect to Dev Container"
                                 }
+                                // FORK:local-transport
+                                RemoteConnectionOptions::Local(_) => {
+                                    "Failed to connect to local session host"
+                                }
+                                // FORK:end
                                 #[cfg(any(test, feature = "test-support"))]
                                 RemoteConnectionOptions::Mock(_) => {
                                     "Failed to connect to mock server"

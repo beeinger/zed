@@ -2287,6 +2287,9 @@ impl Sidebar {
         let remote_icon_per_type = match host? {
             RemoteConnectionOptions::Wsl(_) => IconName::Linux,
             RemoteConnectionOptions::Docker(_) => IconName::Box,
+            // FORK:local-transport
+            RemoteConnectionOptions::Local(_) => IconName::Screen,
+            // FORK:end
             _ => IconName::Server,
         };
 

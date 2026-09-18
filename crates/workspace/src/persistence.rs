@@ -29,8 +29,9 @@ use project::{
 
 use language::{LanguageName, Toolchain, ToolchainScope};
 use remote::{
-    DockerConnectionOptions, RemoteConnectionIdentity, RemoteConnectionOptions,
-    SshConnectionOptions, WslConnectionOptions, remote_connection_identity,
+    DockerConnectionOptions, LocalConnectionOptions, RemoteConnectionIdentity,
+    RemoteConnectionOptions, SshConnectionOptions, WslConnectionOptions,
+    remote_connection_identity,
 };
 use serde::{Deserialize, Serialize};
 use sqlez::{
@@ -1741,6 +1742,14 @@ impl WorkspaceDb {
                 name = Some(identity_name);
                 user = Some(remote_user);
             }
+            // FORK:local-transport
+            RemoteConnectionIdentity::Local { project_root } => {
+                kind = RemoteConnectionKind::Local;
+                host = Some("localhost".to_string());
+                name = Some(project_root);
+                user = None;
+            }
+            // FORK:end
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionIdentity::Mock { id } => {
                 kind = RemoteConnectionKind::Ssh;
@@ -1749,9 +1758,12 @@ impl WorkspaceDb {
             }
         }
 
-        if let RemoteConnectionOptions::Docker(options) = options {
-            use_podman = Some(options.use_podman);
-            remote_env = serde_json::to_string(&options.remote_env).ok();
+        match options {
+            RemoteConnectionOptions::Docker(options) => {
+                use_podman = Some(options.use_podman);
+                remote_env = serde_json::to_string(&options.remote_env).ok();
+            }
+            _ => {}
         }
 
         Self::get_or_create_remote_connection_query(
@@ -2032,6 +2044,13 @@ impl WorkspaceDb {
                     remote_env,
                 }))
             }
+            // FORK:local-transport
+            RemoteConnectionKind::Local => {
+                Some(RemoteConnectionOptions::Local(LocalConnectionOptions {
+                    project_root: PathBuf::from(name?),
+                    nickname: user,
+                }))
+            } // FORK:end
         }
     }
 
@@ -4346,6 +4365,49 @@ mod tests {
             .unwrap();
 
         assert_eq!(connection_id, same_connection_id);
+    }
+
+    #[gpui::test]
+    async fn test_get_or_create_local_project() {
+        let db = WorkspaceDb::open_test_db("test_get_or_create_local_project").await;
+
+        let connection_id = db
+            .get_or_create_remote_connection(RemoteConnectionOptions::Local(
+                LocalConnectionOptions {
+                    project_root: PathBuf::from("/tmp/app/"),
+                    nickname: Some("work".to_string()),
+                },
+            ))
+            .await
+            .unwrap();
+
+        let same_connection = db
+            .get_or_create_remote_connection(RemoteConnectionOptions::Local(
+                LocalConnectionOptions {
+                    project_root: PathBuf::from("/tmp/app"),
+                    nickname: None,
+                },
+            ))
+            .await
+            .unwrap();
+        assert_eq!(connection_id, same_connection);
+
+        let restored = db.remote_connection(connection_id).unwrap();
+        match restored {
+            RemoteConnectionOptions::Local(options) => {
+                assert_eq!(options.identity_project_root(), "/tmp/app");
+                assert_eq!(options.nickname, None);
+            }
+            other => panic!("expected local connection, got {other:?}"),
+        }
+
+        let different_connection = db
+            .get_or_create_remote_connection(RemoteConnectionOptions::Local(
+                LocalConnectionOptions::new(PathBuf::from("/tmp/other")),
+            ))
+            .await
+            .unwrap();
+        assert_ne!(connection_id, different_connection);
     }
 
     #[gpui::test]

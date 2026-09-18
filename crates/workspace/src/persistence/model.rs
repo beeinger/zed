@@ -37,6 +37,9 @@ pub(crate) enum RemoteConnectionKind {
     Ssh,
     Wsl,
     Docker,
+    // FORK:local-transport
+    Local,
+    // FORK:end
 }
 
 #[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
@@ -163,6 +166,9 @@ impl RemoteConnectionKind {
             RemoteConnectionKind::Ssh => "ssh",
             RemoteConnectionKind::Wsl => "wsl",
             RemoteConnectionKind::Docker => "docker",
+            // FORK:local-transport
+            RemoteConnectionKind::Local => "local",
+            // FORK:end
         }
     }
 
@@ -171,6 +177,9 @@ impl RemoteConnectionKind {
             "ssh" => Some(Self::Ssh),
             "wsl" => Some(Self::Wsl),
             "docker" => Some(Self::Docker),
+            // FORK:local-transport
+            "local" => Some(Self::Local),
+            // FORK:end
             _ => None,
         }
     }

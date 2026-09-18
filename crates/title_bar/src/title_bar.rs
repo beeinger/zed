@@ -624,6 +624,13 @@ impl TitleBar {
             RemoteConnectionOptions::Docker(_dev_container_connection) => {
                 (None, "Dev Container", IconName::Box)
             }
+            // FORK:local-transport
+            RemoteConnectionOptions::Local(options) => (
+                options.nickname.map(|nick| nick.into()),
+                "Local Project",
+                IconName::Screen,
+            ),
+            // FORK:end
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionOptions::Mock(_) => (None, "Mock Remote Project", IconName::Server),
         };

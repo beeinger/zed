@@ -171,6 +171,11 @@ impl From<RemoteConnectionOptions> for RemoteHostLocation {
                 Some(SharedString::new(docker_connection_options.name)),
                 SharedString::new(docker_connection_options.container_id),
             ),
+            // FORK:local-transport
+            RemoteConnectionOptions::Local(local) => {
+                (None, SharedString::new(local.identity_project_root()))
+            }
+            // FORK:end
             #[cfg(feature = "test-support")]
             RemoteConnectionOptions::Mock(mock) => {
                 (None, SharedString::new(format!("mock-{}", mock.id)))

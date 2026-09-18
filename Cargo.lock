@@ -16654,7 +16654,16 @@ version = "0.1.0"
 name = "session_transport"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "collections",
+ "futures 0.3.34",
+ "gpui",
+ "log",
+ "remote",
+ "rpc",
  "session_protocol",
+ "util",
 ]
 
 [[package]]
@@ -23006,6 +23015,7 @@ dependencies = [
  "serde",
  "serde_json",
  "session",
+ "session_transport",
  "settings",
  "settings_profile_selector",
  "settings_ui",
