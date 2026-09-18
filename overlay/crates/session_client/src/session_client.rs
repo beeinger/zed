@@ -1,9 +1,12 @@
 //! GUI-side adapter for the always-on session host.
 //!
-//! Later phases add `RemoteAgentConnection` (`AgentConnection` over ACP-in-Envelope)
-//! and the production helper that opens a folder through a local daemon instead
-//! of `Project::local`. Tests keep `Project::local`.
+//! `RemoteAgentConnection` is `AgentConnection` over ACP-in-Envelope.
+//! Production can later open a folder through a local daemon instead of
+//! `Project::local`. Tests keep `Project::local`.
 
+mod remote_agent_connection;
+
+pub use remote_agent_connection::{RemoteAgentConnection, apply_catch_up};
 pub use session_protocol::daemon_socket_id;
 
 /// Placeholder so production binaries can call `session_client::init` at a
