@@ -431,6 +431,11 @@ messages!(
     (KillKernel, Background),
     (GetRemoteProfilingData, Background),
     (GetRemoteProfilingDataResponse, Background),
+    // FORK:acp-envelope
+    (SessionAgentRpc, Background),
+    (SessionSubscribe, Background),
+    (SessionCatchUp, Background),
+    // FORK:end
 );
 
 request_messages!(
@@ -671,6 +676,10 @@ request_messages!(
     (SpawnKernel, SpawnKernelResponse),
     (KillKernel, Ack),
     (GetRemoteProfilingData, GetRemoteProfilingDataResponse),
+    // FORK:acp-envelope
+    (SessionAgentRpc, SessionAgentRpc),
+    (SessionSubscribe, SessionCatchUp),
+    // FORK:end
 );
 
 lsp_messages!(
@@ -904,7 +913,7 @@ entity_messages!(
     FindSearchCandidatesChunk,
     FindSearchCandidatesCancelled,
     DownloadFileByPath,
-    GetRemoteProfilingData
+    GetRemoteProfilingData,
 );
 
 entity_messages!(

@@ -15283,6 +15283,7 @@ dependencies = [
  "rust-embed",
  "semver",
  "serde_json",
+ "session_host",
  "settings",
  "shellexpand",
  "smol",
@@ -16636,19 +16637,61 @@ dependencies = [
 name = "session_client"
 version = "0.1.0"
 dependencies = [
+ "acp_thread",
+ "action_log",
+ "agent-client-protocol",
+ "anyhow",
+ "collections",
+ "futures 0.3.34",
+ "gpui",
+ "log",
+ "project",
+ "remote",
+ "rpc",
+ "serde",
+ "serde_json",
  "session_protocol",
+ "util",
+ "watch",
 ]
 
 [[package]]
 name = "session_host"
 version = "0.1.0"
 dependencies = [
+ "acp_thread",
+ "agent",
+ "agent-client-protocol",
+ "anyhow",
+ "client",
+ "clock",
+ "fs",
+ "futures 0.3.34",
+ "gpui",
+ "gpui_tokio",
+ "http_client",
+ "language",
+ "language_model",
+ "language_models",
+ "log",
+ "node_runtime",
+ "project",
+ "proto",
+ "rpc",
+ "serde",
+ "serde_json",
  "session_protocol",
+ "util",
 ]
 
 [[package]]
 name = "session_protocol"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "session_transport"

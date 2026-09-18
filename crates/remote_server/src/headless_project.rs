@@ -14,8 +14,8 @@ use http_client::HttpClient;
 use language::{Buffer, BufferEvent, LanguageRegistry, proto::serialize_operation};
 use node_runtime::NodeRuntime;
 use project::{
-    AgentRegistryStore, LspStore, LspStoreEvent, ManifestTree, PrettierStore, ProjectEnvironment,
-    ProjectPath, ToolchainStore, WorktreeId,
+    AgentRegistryStore, HeadlessProjectStores, LspStore, LspStoreEvent, ManifestTree,
+    PrettierStore, ProjectEnvironment, ProjectPath, ToolchainStore, WorktreeId,
     agent_server_store::AgentServerStore,
     buffer_store::{BufferStore, BufferStoreEvent},
     context_server_store::ContextServerStore,
@@ -104,6 +104,8 @@ impl HeadlessProject {
         init_worktree_trust: bool,
         cx: &mut Context<Self>,
     ) -> Self {
+        let node_runtime_for_host = node_runtime.clone();
+        let http_client_for_host = http_client.clone();
         debug_adapter_extension::init(proxy.clone(), cx);
         languages::init(languages.clone(), fs.clone(), node_runtime.clone(), cx);
 
@@ -340,6 +342,33 @@ impl HeadlessProject {
         GitStore::init(&session);
         AgentServerStore::init_headless(&session);
         ContextServerStore::init_headless(&session);
+
+        // FORK:session-host-init
+        session_host::init(
+            session_host::SessionHostInit {
+                session: session.clone(),
+                fs: fs.clone(),
+                http_client: http_client_for_host,
+                node_runtime: node_runtime_for_host,
+                languages: languages.clone(),
+                stores: HeadlessProjectStores {
+                    worktree_store: worktree_store.clone(),
+                    buffer_store: buffer_store.clone(),
+                    lsp_store: lsp_store.clone(),
+                    git_store: git_store.clone(),
+                    agent_server_store: agent_server_store.clone(),
+                    task_store: task_store.clone(),
+                    dap_store: dap_store.clone(),
+                    breakpoint_store: breakpoint_store.clone(),
+                    context_server_store: context_server_store.clone(),
+                    settings_observer: settings_observer.clone(),
+                    environment: environment.clone(),
+                    toolchain_store: toolchain_store.clone(),
+                },
+            },
+            cx,
+        );
+        // FORK:end
 
         HeadlessProject {
             next_entry_id: Default::default(),

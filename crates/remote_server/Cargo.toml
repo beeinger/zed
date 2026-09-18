@@ -74,6 +74,9 @@ worktree.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+# FORK:session-host-init
+session_host.workspace = true
+# FORK:end
 
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true

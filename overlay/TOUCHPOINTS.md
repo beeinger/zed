@@ -36,6 +36,28 @@ APPLIED local-transport crates/workspace/src/persistence/model.rs
 APPLIED local-transport crates/sidebar/src/sidebar.rs
 APPLIED local-transport crates/zed/src/main.rs
 APPLIED local-transport crates/zed/Cargo.toml
+APPLIED acp-envelope crates/proto/proto/ai.proto
+APPLIED acp-envelope crates/proto/proto/zed.proto
+APPLIED acp-envelope crates/proto/src/proto.rs
+APPLIED session-host-init crates/project/src/project.rs
+APPLIED session-host-init crates/remote_server/src/headless_project.rs
+APPLIED session-host-init crates/remote_server/Cargo.toml
+APPLIED session-host-init crates/gpui_tokio/src/gpui_tokio.rs
+APPLIED session-update-sink crates/agent/src/agent.rs
+
+## Planned (not yet in tree)
+
+These ids will be added in later commits. They are documented so merges and
+reviews share one vocabulary.
+
+| id | file | function / site | intent |
+| --- | --- | --- | --- |
+| session-host-init | `crates/remote_server/src/headless_project.rs` | `HeadlessProject::new` | Native agent + LLM on the daemon (applied) |
+| acp-envelope | `crates/proto/proto/{ai,zed}.proto` | Envelope fields ≥ 2000 | Tunnel ACP; do not grow a full agent API (applied) |
+| remote-native-agent | `crates/agent_ui/src/agent_ui.rs` | `Agent::server` | `RemoteAgentConnection` when via remote server |
+| detach-external-acp | `crates/agent_servers/src/acp.rs` | `AcpConnection::stdio` | Spawn ACP children on the daemon |
+| server-buffer-authority | `crates/project/src/buffer_store.rs` | `handle_close_buffer` | Client close does not drop agent-held buffers |
+| zstd-remote | `crates/remote/src/protocol.rs` | `read_message` / `write_message` | Compress remote Envelope stream |
 
 ## Planned (not yet in tree)
 
@@ -45,8 +67,9 @@ reviews share one vocabulary.
 | id | file | function / site | intent |
 | --- | --- | --- | --- |
 | session-host-init | `crates/remote_server/src/headless_project.rs` | `HeadlessProject::new` | Native agent + LLM on the daemon |
-| acp-envelope | `crates/proto/proto/{ai,zed}.proto` | Envelope fields ≥ 2000 | Tunnel ACP; do not grow a full agent API |
+| acp-envelope | `crates/proto/proto/{ai,zed}.proto` | Envelope fields ≥ 2000 | Tunnel ACP; do not grow a full agent API (applied) |
 | remote-native-agent | `crates/agent_ui/src/agent_ui.rs` | `Agent::server` | `RemoteAgentConnection` when via remote server |
 | detach-external-acp | `crates/agent_servers/src/acp.rs` | `AcpConnection::stdio` | Spawn ACP children on the daemon |
 | server-buffer-authority | `crates/project/src/buffer_store.rs` | `handle_close_buffer` | Client close does not drop agent-held buffers |
 | zstd-remote | `crates/remote/src/protocol.rs` | `read_message` / `write_message` | Compress remote Envelope stream |
+
