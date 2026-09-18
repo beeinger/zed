@@ -1,0 +1,17 @@
+[package]
+name = "session_transport"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+description = "Local unix-socket RemoteConnection so the GUI always talks to a daemon"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/session_transport.rs"
+doctest = false
+
+[dependencies]
+session_protocol.workspace = true

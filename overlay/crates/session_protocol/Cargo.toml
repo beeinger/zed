@@ -1,0 +1,16 @@
+[package]
+name = "session_protocol"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+description = "Shared types for the always-on session host (daemon ids, event log, ACP tunnel)"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/session_protocol.rs"
+doctest = false
+
+[dependencies]

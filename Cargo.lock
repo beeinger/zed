@@ -16632,6 +16632,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "session_client"
+version = "0.1.0"
+dependencies = [
+ "session_protocol",
+]
+
+[[package]]
+name = "session_host"
+version = "0.1.0"
+dependencies = [
+ "session_protocol",
+]
+
+[[package]]
+name = "session_protocol"
+version = "0.1.0"
+
+[[package]]
+name = "session_transport"
+version = "0.1.0"
+dependencies = [
+ "session_protocol",
+]
+
+[[package]]
 name = "settings"
 version = "0.1.0"
 dependencies = [
