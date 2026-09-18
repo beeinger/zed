@@ -15195,6 +15195,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "session_protocol",
  "settings",
  "smol",
  "telemetry",
