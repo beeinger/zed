@@ -253,6 +253,14 @@ impl RemoteConnectionModal {
                 (options.distro_name.clone(), None, true, false)
             }
             RemoteConnectionOptions::Docker(options) => (options.name.clone(), None, false, true),
+            // FORK:local-transport
+            RemoteConnectionOptions::Local(options) => (
+                options.project_root.to_string_lossy().into_owned(),
+                options.nickname.clone(),
+                false,
+                false,
+            ),
+            // FORK:end
             #[cfg(feature = "test-support")]
             RemoteConnectionOptions::Mock(options) => {
                 (format!("mock-{}", options.id), None, false, false)

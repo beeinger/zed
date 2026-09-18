@@ -14,4 +14,13 @@ path = "src/session_transport.rs"
 doctest = false
 
 [dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+collections.workspace = true
+futures.workspace = true
+gpui.workspace = true
+log.workspace = true
+remote.workspace = true
+rpc = { workspace = true, features = ["gpui"] }
 session_protocol.workspace = true
+util.workspace = true

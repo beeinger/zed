@@ -10778,6 +10778,11 @@ pub fn workspace_windows_for_location(
                 (RemoteConnectionOptions::Docker(a), RemoteConnectionOptions::Docker(b)) => {
                     a.container_id == b.container_id
                 }
+                // FORK:local-transport
+                (RemoteConnectionOptions::Local(a), RemoteConnectionOptions::Local(b)) => {
+                    a.identity_project_root() == b.identity_project_root()
+                }
+                // FORK:end
                 #[cfg(any(test, feature = "test-support"))]
                 (RemoteConnectionOptions::Mock(a), RemoteConnectionOptions::Mock(b)) => {
                     a.id == b.id
@@ -11384,11 +11389,14 @@ pub fn open_remote_project_with_new_connection(
             Some(path) => path.to_string_lossy().into_owned(),
             None => String::new(),
         };
-        let identifier = ConnectionIdentifier::stable(
-            connection_options.connection_type(),
-            &connection_options.host(),
-            &project_root,
-        );
+        let identifier = match &connection_options {
+            RemoteConnectionOptions::Local(options) => {
+                ConnectionIdentifier::stable("local", "localhost", &options.identity_project_root())
+            }
+            other => {
+                ConnectionIdentifier::stable(other.connection_type(), &other.host(), &project_root)
+            }
+        };
         // FORK:end
 
         let session = match cx

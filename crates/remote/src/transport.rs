@@ -15,6 +15,9 @@ use rpc::proto::Envelope;
 use util::command::Child;
 
 pub mod docker;
+// FORK:local-transport
+pub mod local;
+// FORK:end
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;
 pub mod ssh;
@@ -125,7 +128,9 @@ fn parse_shell(output: &str, fallback_shell: &str) -> String {
     }
 }
 
-fn handle_rpc_messages_over_child_process_stdio(
+// FORK:local-transport
+pub fn handle_rpc_messages_over_child_process_stdio(
+    // FORK:end
     mut remote_proxy_process: Child,
     incoming_tx: UnboundedSender<Envelope>,
     mut outgoing_rx: UnboundedReceiver<Envelope>,

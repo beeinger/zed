@@ -6,6 +6,7 @@ use crate::{
     proxy::ProxyLaunchError,
     transport::{
         docker::{DockerConnectionOptions, DockerExecConnection},
+        local::LocalConnectionOptions,
         ssh::SshRemoteConnection,
         wsl::{WslConnectionOptions, WslRemoteConnection},
     },
@@ -1305,6 +1306,11 @@ impl ConnectionPool {
                                 .await
                                 .map(|connection| Arc::new(connection) as Arc<dyn RemoteConnection>)
                         }
+                        // FORK:local-transport
+                        RemoteConnectionOptions::Local(opts) => {
+                            crate::transport::local::connect(opts, delegate, cx)
+                        }
+                        // FORK:end
                         #[cfg(any(test, feature = "test-support"))]
                         RemoteConnectionOptions::Mock(opts) => match cx.update(|cx| {
                             cx.default_global::<crate::transport::mock::MockConnectionRegistry>()
@@ -1352,6 +1358,9 @@ pub enum RemoteConnectionOptions {
     Ssh(SshConnectionOptions),
     Wsl(WslConnectionOptions),
     Docker(DockerConnectionOptions),
+    // FORK:local-transport
+    Local(LocalConnectionOptions),
+    // FORK:end
     #[cfg(any(test, feature = "test-support"))]
     Mock(crate::transport::mock::MockConnectionOptions),
 }
@@ -1371,6 +1380,15 @@ impl RemoteConnectionOptions {
                     opts.name.clone()
                 }
             }
+            // FORK:local-transport
+            RemoteConnectionOptions::Local(opts) => opts.nickname.clone().unwrap_or_else(|| {
+                opts.project_root
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| "local".to_string())
+            }),
+            // FORK:end
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionOptions::Mock(opts) => format!("mock-{}", opts.id),
         }
@@ -1389,6 +1407,9 @@ impl RemoteConnectionOptions {
                     "docker"
                 }
             }
+            // FORK:local-transport
+            RemoteConnectionOptions::Local(_) => "local",
+            // FORK:end
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionOptions::Mock(_) => "mock",
         }
@@ -1399,6 +1420,9 @@ impl RemoteConnectionOptions {
             RemoteConnectionOptions::Ssh(opts) => opts.host.to_string(),
             RemoteConnectionOptions::Wsl(opts) => opts.distro_name.clone(),
             RemoteConnectionOptions::Docker(opts) => opts.name.clone(),
+            // FORK:local-transport
+            RemoteConnectionOptions::Local(_) => "localhost".to_string(),
+            // FORK:end
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionOptions::Mock(opts) => format!("mock-{}", opts.id),
         }
@@ -1461,6 +1485,21 @@ mod tests {
             })
             .connection_type(),
             "podman"
+        );
+        assert_eq!(
+            RemoteConnectionOptions::Local(LocalConnectionOptions::new(PathBuf::from("/tmp/app")))
+                .connection_type(),
+            "local"
+        );
+        assert_eq!(
+            RemoteConnectionOptions::Local(LocalConnectionOptions::new(PathBuf::from("/tmp/app")))
+                .host(),
+            "localhost"
+        );
+        assert_eq!(
+            RemoteConnectionOptions::Local(LocalConnectionOptions::new(PathBuf::from("/tmp/app")))
+                .display_name(),
+            "app"
         );
     }
 
@@ -1618,6 +1657,14 @@ impl From<WslConnectionOptions> for RemoteConnectionOptions {
         RemoteConnectionOptions::Wsl(opts)
     }
 }
+
+// FORK:local-transport
+impl From<LocalConnectionOptions> for RemoteConnectionOptions {
+    fn from(opts: LocalConnectionOptions) -> Self {
+        RemoteConnectionOptions::Local(opts)
+    }
+}
+// FORK:end
 
 #[cfg(any(test, feature = "test-support"))]
 impl From<crate::transport::mock::MockConnectionOptions> for RemoteConnectionOptions {

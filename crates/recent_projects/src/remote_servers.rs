@@ -413,6 +413,16 @@ impl ProjectPicker {
                 connection_string: "".into(),
                 nickname: None,
             },
+            // FORK:local-transport
+            RemoteConnectionOptions::Local(connection) => ProjectPickerData::Ssh {
+                connection_string: connection
+                    .project_root
+                    .to_string_lossy()
+                    .into_owned()
+                    .into(),
+                nickname: connection.nickname.clone().map(|nick| nick.into()),
+            },
+            // FORK:end
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionOptions::Mock(options) => ProjectPickerData::Ssh {
                 connection_string: format!("mock-{}", options.id).into(),

@@ -16,6 +16,10 @@ pub use remote_identity::{
     RemoteConnectionIdentity, remote_connection_identity, same_remote_connection_identity,
 };
 pub use transport::docker::DockerConnectionOptions;
+// FORK:local-transport
+pub use transport::handle_rpc_messages_over_child_process_stdio;
+pub use transport::local::{LocalConnectionOptions, register_local_remote_connect};
+// FORK:end
 pub use transport::ssh::{SshConnectionOptions, SshPortForwardOption};
 pub use transport::wsl::WslConnectionOptions;
 #[cfg(target_os = "windows")]

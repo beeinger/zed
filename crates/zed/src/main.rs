@@ -737,6 +737,9 @@ fn main() {
 
         audio::init(cx);
         workspace::init(app_state.clone(), cx);
+        // FORK:local-transport
+        session_transport::init(cx);
+        // FORK:end
         ui_prompt::init(cx);
 
         go_to_line::init(cx);
