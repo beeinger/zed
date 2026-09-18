@@ -1621,7 +1621,9 @@ impl Project {
                         let shutdown = this.remote_client.take().and_then(|client| {
                             client.update(cx, |client, cx| {
                                 client.shutdown_processes(
-                                    Some(proto::ShutdownRemoteServer {}),
+                                    // FORK:no-shutdown-on-quit
+                                    None::<proto::ShutdownRemoteServer>,
+                                    // FORK:end
                                     cx.background_executor().clone(),
                                 )
                             })
@@ -2027,7 +2029,9 @@ impl Project {
         if let Some(client) = self.remote_client.take() {
             let shutdown = client.update(cx, |client, cx| {
                 client.shutdown_processes(
-                    Some(proto::ShutdownRemoteServer {}),
+                    // FORK:no-shutdown-on-quit
+                    None::<proto::ShutdownRemoteServer>,
+                    // FORK:end
                     cx.background_executor().clone(),
                 )
             });

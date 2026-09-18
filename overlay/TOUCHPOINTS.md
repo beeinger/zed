@@ -11,6 +11,14 @@ Convention: `APPLIED <id> <path>`
 ## Applied
 
 APPLIED overlay-crates Cargo.toml
+APPLIED daemon-attach crates/remote_server/src/server.rs
+APPLIED no-idle-quit crates/remote_server/src/server.rs
+APPLIED ignore-ui-shutdown crates/remote_server/src/headless_project.rs
+APPLIED no-shutdown-on-quit crates/project/src/project.rs
+APPLIED stable-id crates/remote/src/remote_client.rs
+APPLIED stable-id crates/remote/Cargo.toml
+APPLIED stable-id-open crates/workspace/src/workspace.rs
+APPLIED loose-heartbeat crates/remote/src/remote_client.rs
 
 ## Planned (not yet in tree)
 
@@ -19,13 +27,6 @@ reviews share one vocabulary.
 
 | id | file | function / site | intent |
 | --- | --- | --- | --- |
-| daemon-attach | `crates/remote_server/src/server.rs` | `execute_proxy` | Attach to a live daemon; do not kill |
-| no-idle-quit | `crates/remote_server/src/server.rs` | `start_server` | Do not quit after 10 minutes idle |
-| ignore-ui-shutdown | `crates/remote_server/src/headless_project.rs` | `handle_shutdown_remote_server` | GUI quit is not daemon quit |
-| no-shutdown-on-quit | `crates/project/src/project.rs` | `on_app_quit` / `release` | Do not send `ShutdownRemoteServer` |
-| stable-id | `crates/remote/src/remote_client.rs` | `ConnectionIdentifier` | Hash of transport+host+root, not window id |
-| stable-id-open | `crates/workspace/src/workspace.rs` | `open_remote_project_with_new_connection` | Use `ConnectionIdentifier::stable` |
-| loose-heartbeat | `crates/remote/src/remote_client.rs` | heartbeat constants | Survive high-RTT SSH |
 | local-transport | `crates/remote/src/remote_client.rs` | `RemoteConnectionOptions` + `ConnectionPool` | Local unix `RemoteConnection` |
 | session-host-init | `crates/remote_server/src/headless_project.rs` | `HeadlessProject::new` | Native agent + LLM on the daemon |
 | acp-envelope | `crates/proto/proto/{ai,zed}.proto` | Envelope fields ≥ 2000 | Tunnel ACP; do not grow a full agent API |

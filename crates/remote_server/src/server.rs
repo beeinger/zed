@@ -406,8 +406,10 @@ fn start_server(
     cx: &mut App,
     is_wsl_interop: bool,
 ) -> AnyProtoClient {
-    // This is the server idle timeout. If no connection comes in this timeout, the server will shut down.
-    const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+    // FORK:no-idle-quit
+    // Do not quit when no client is connected. Reconnect to this HeadlessProject
+    // is the normal path; a 10-minute idle timer would kill in-flight daemon work.
+    // FORK:end
 
     let (incoming_tx, incoming_rx) = mpsc::unbounded::<Envelope>();
     let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<Envelope>();
@@ -431,6 +433,7 @@ fn start_server(
             );
 
             log::info!("accepting new connections");
+            // FORK:no-idle-quit
             let result = select! {
                 streams = streams.fuse() => {
                     let (Ok((stdin_stream, _)), Ok((stdout_stream, _)), Ok((stderr_stream, _))) = streams else {
@@ -440,21 +443,12 @@ fn start_server(
                     log::info!("accepted new connections");
                     anyhow::Ok((stdin_stream, stdout_stream, stderr_stream))
                 }
-                _ = futures::FutureExt::fuse(cx.background_executor().timer(IDLE_TIMEOUT)) => {
-                    log::warn!("timed out waiting for new connections after {:?}. exiting.", IDLE_TIMEOUT);
-                    cx.update(|cx| {
-                        // TODO: This is a hack, because in a headless project, shutdown isn't executed
-                        // when calling quit, but it should be.
-                        cx.shutdown();
-                        cx.quit();
-                    });
-                    break;
-                }
                 _ = app_quit_rx.next().fuse() => {
                     log::info!("app quit requested");
                     break;
                 }
             };
+            // FORK:end
 
             let Ok((mut stdin_stream, mut stdout_stream, mut stderr_stream)) = result else {
                 break;
@@ -839,6 +833,23 @@ impl ExecuteProxyError {
     }
 }
 
+// FORK:daemon-attach
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyAttachDecision {
+    Attach(u32),
+    Spawn,
+    ServerNotRunning,
+}
+
+fn decide_proxy_attach(running_pid: Option<u32>, is_reconnecting: bool) -> ProxyAttachDecision {
+    match (running_pid, is_reconnecting) {
+        (Some(pid), _) => ProxyAttachDecision::Attach(pid),
+        (None, true) => ProxyAttachDecision::ServerNotRunning,
+        (None, false) => ProxyAttachDecision::Spawn,
+    }
+}
+// FORK:end
+
 pub(crate) fn execute_proxy(
     identifier: String,
     is_reconnecting: bool,
@@ -878,37 +889,35 @@ pub(crate) fn execute_proxy(
                 path: server_paths.pid_file.clone(),
             }
         })?;
-        if is_reconnecting {
-            match server_pid {
-                None => {
-                    log::error!("attempted to reconnect, but no server running");
-                    return Err(ExecuteProxyError::ServerNotRunning(
-                        ProxyLaunchError::ServerNotRunning,
-                    ));
-                }
-                Some(server_pid) => server_pid,
+        // FORK:daemon-attach
+        match decide_proxy_attach(server_pid, is_reconnecting) {
+            ProxyAttachDecision::Attach(pid) => {
+                log::info!("proxy attaching to existing server with PID {}", pid);
+                pid
             }
-        } else {
-            if let Some(pid) = server_pid {
-                log::info!(
-                    "proxy found server already running with PID {}. Killing process and cleaning up files...",
-                    pid
-                );
-                kill_running_server(pid, &server_paths)?;
+            ProxyAttachDecision::ServerNotRunning => {
+                log::error!("attempted to reconnect, but no server running");
+                return Err(ExecuteProxyError::ServerNotRunning(
+                    ProxyLaunchError::ServerNotRunning,
+                ));
             }
-            gpui::block_on(spawn_server(&server_paths)).map_err(ExecuteProxyError::SpawnServer)?;
-            std::fs::read_to_string(&server_paths.pid_file)
-                .and_then(|contents| {
-                    contents.parse::<u32>().map_err(|_| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Invalid PID file contents",
-                        )
+            ProxyAttachDecision::Spawn => {
+                gpui::block_on(spawn_server(&server_paths))
+                    .map_err(ExecuteProxyError::SpawnServer)?;
+                std::fs::read_to_string(&server_paths.pid_file)
+                    .and_then(|contents| {
+                        contents.parse::<u32>().map_err(|_| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "Invalid PID file contents",
+                            )
+                        })
                     })
-                })
-                .map_err(SpawnServerError::ProcessStatus)
-                .map_err(ExecuteProxyError::SpawnServer)?
+                    .map_err(SpawnServerError::ProcessStatus)
+                    .map_err(ExecuteProxyError::SpawnServer)?
+            }
         }
+        // FORK:end
     };
 
     let stdin_task = smol::spawn(async move {
@@ -987,6 +996,10 @@ pub(crate) fn execute_proxy(
     Ok(())
 }
 
+// FORK:daemon-attach
+// Kept for a future explicit reset. Fresh connect attaches instead of killing.
+#[allow(dead_code)]
+// FORK:end
 fn kill_running_server(pid: u32, paths: &ServerPaths) -> Result<(), ExecuteProxyError> {
     log::info!("killing existing server with PID {}", pid);
     let system = sysinfo::System::new_with_specifics(
@@ -1373,6 +1386,37 @@ fn is_file_in_use(file_name: &OsStr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // FORK:daemon-attach
+    #[test]
+    fn decide_proxy_attach_attaches_to_live_pid_on_fresh_connect() {
+        assert_eq!(
+            decide_proxy_attach(Some(42), false),
+            ProxyAttachDecision::Attach(42)
+        );
+    }
+
+    #[test]
+    fn decide_proxy_attach_attaches_to_live_pid_when_reconnecting() {
+        assert_eq!(
+            decide_proxy_attach(Some(7), true),
+            ProxyAttachDecision::Attach(7)
+        );
+    }
+
+    #[test]
+    fn decide_proxy_attach_spawns_when_no_pid_on_fresh_connect() {
+        assert_eq!(decide_proxy_attach(None, false), ProxyAttachDecision::Spawn);
+    }
+
+    #[test]
+    fn decide_proxy_attach_reports_server_not_running_when_reconnecting_without_pid() {
+        assert_eq!(
+            decide_proxy_attach(None, true),
+            ProxyAttachDecision::ServerNotRunning
+        );
+    }
+    // FORK:end
 
     #[test]
     fn rotated_remote_log_path_uses_numbered_log_suffix() {

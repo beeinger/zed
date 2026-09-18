@@ -157,13 +157,18 @@ pub trait RemoteClientDelegate: Send + Sync {
     fn set_status(&self, status: Option<&str>, cx: &mut AsyncApp);
 }
 
-const MAX_MISSED_HEARTBEATS: usize = 5;
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
+// FORK:loose-heartbeat
+// High-RTT SSH and sleep/wake need more slack than a LAN session: 15s pings,
+// 10 misses (~2.5 minutes) before the link is treated as dead, and 12 reconnect
+// attempts so a brief outage is not fatal.
+const MAX_MISSED_HEARTBEATS: usize = 10;
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
 const INITIAL_CONNECTION_TIMEOUT: Duration =
     Duration::from_secs(if cfg!(debug_assertions) { 5 } else { 60 });
 
-pub const MAX_RECONNECT_ATTEMPTS: usize = 3;
+pub const MAX_RECONNECT_ATTEMPTS: usize = 12;
+// FORK:end
 
 enum State {
     Connecting,
@@ -349,6 +354,9 @@ impl EventEmitter<RemoteClientEvent> for RemoteClient {}
 pub enum ConnectionIdentifier {
     Setup(u64),
     Workspace(i64),
+    // FORK:stable-id
+    Stable(String),
+    // FORK:end
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -357,6 +365,16 @@ impl ConnectionIdentifier {
     pub fn setup() -> Self {
         Self::Setup(NEXT_ID.fetch_add(1, SeqCst))
     }
+
+    // FORK:stable-id
+    pub fn stable(transport: &str, host: &str, project_root: &str) -> Self {
+        Self::Stable(session_protocol::daemon_socket_id(
+            transport,
+            host,
+            project_root,
+        ))
+    }
+    // FORK:end
 
     // This string gets used in a socket name, and so must be relatively short.
     // The total length of:
@@ -374,6 +392,9 @@ impl ConnectionIdentifier {
             Self::Workspace(workspace_id) => {
                 format!("{identifier_prefix}workspace-{workspace_id}",)
             }
+            // FORK:stable-id
+            Self::Stable(identifier) => format!("{identifier_prefix}{identifier}"),
+            // FORK:end
         }
     }
 }

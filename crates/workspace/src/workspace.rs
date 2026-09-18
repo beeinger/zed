@@ -11378,15 +11378,22 @@ pub fn open_remote_project_with_new_connection(
             deserialize_remote_project(remote_connection.connection_options(), paths.clone(), cx)
                 .await?;
 
+        // FORK:stable-id-open
+        let connection_options = remote_connection.connection_options();
+        let project_root = match paths.first() {
+            Some(path) => path.to_string_lossy().into_owned(),
+            None => String::new(),
+        };
+        let identifier = ConnectionIdentifier::stable(
+            connection_options.connection_type(),
+            &connection_options.host(),
+            &project_root,
+        );
+        // FORK:end
+
         let session = match cx
             .update(|cx| {
-                remote::RemoteClient::new(
-                    ConnectionIdentifier::Workspace(workspace_id.0),
-                    remote_connection,
-                    cancel_rx,
-                    delegate,
-                    cx,
-                )
+                remote::RemoteClient::new(identifier, remote_connection, cancel_rx, delegate, cx)
             })
             .await?
         {
