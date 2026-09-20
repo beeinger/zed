@@ -28,6 +28,9 @@ pub mod methods {
     pub const LIST_MODELS: &str = "zed/list_models";
     pub const SELECT_MODEL: &str = "zed/select_model";
     pub const SELECTED_MODEL: &str = "zed/selected_model";
+    pub const THREAD_SUMMARY: &str = "zed/thread_summary";
+    /// Daemon → GUI: session archive/status changed. Params are `SessionListWire`.
+    pub const SESSION_LIST_CHANGED: &str = "zed/session_list_changed";
 }
 
 /// Wire object carried in `SessionAgentRpc.json`.
@@ -244,5 +247,7 @@ mod tests {
         assert_eq!(methods::SET_CREDENTIALS, "zed/set_credentials");
         assert_eq!(methods::SESSION_LIST, "session/list");
         assert_eq!(methods::LIST_MODELS, "zed/list_models");
+        assert_eq!(methods::THREAD_SUMMARY, "zed/thread_summary");
+        assert_eq!(methods::SESSION_LIST_CHANGED, "zed/session_list_changed");
     }
 }

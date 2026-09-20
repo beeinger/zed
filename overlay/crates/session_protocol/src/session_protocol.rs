@@ -10,14 +10,16 @@ mod coalesce;
 mod daemon_id;
 mod event_log;
 mod event_seq;
+mod gui_ids;
 mod jsonrpc;
 mod permission;
 
 pub use acp_connect::{
     AcpConnectRequest, AcpConnectResponse, DeleteSessionRequest, ModelInfoWire, ModelListWire,
     NATIVE_AGENT_ID, SessionInfoWire, SessionListWire, SessionModelRequest, SetCredentialsRequest,
-    is_native_agent_id,
+    ThreadSummaryRequest, is_native_agent_id,
 };
+pub use gui_ids::{EnvelopeIds, GuiIdMap, OutgoingRoute};
 pub use acp_tunnel::{
     CatchUpResponse, JsonRpcLine, SubscribeRequest, catch_up_session_update_params,
 };

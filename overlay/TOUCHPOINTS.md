@@ -62,6 +62,10 @@ APPLIED daemon-credentials crates/language_model/src/api_key.rs
 APPLIED daemon-credentials crates/language_model/src/language_model.rs
 APPLIED daemon-service crates/remote_server/src/server.rs
 APPLIED daemon-service crates/remote_server/src/main.rs
+APPLIED multi-gui crates/remote_server/src/server.rs
+APPLIED multi-gui crates/remote_server/src/gui_mux.rs
+APPLIED multi-gui crates/remote_server/Cargo.toml
+APPLIED daemon-detach crates/remote_server/src/server.rs
 
 ## Planned (not yet in tree)
 

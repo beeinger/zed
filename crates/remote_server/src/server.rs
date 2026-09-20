@@ -1,4 +1,7 @@
 mod headless_project;
+// FORK:multi-gui
+mod gui_mux;
+// FORK:end
 
 #[cfg(test)]
 mod remote_editing_tests;
@@ -17,7 +20,6 @@ use fs::{Fs, RealFs};
 use futures::{
     AsyncRead, AsyncWrite, AsyncWriteExt, FutureExt, SinkExt,
     channel::{mpsc, oneshot},
-    select, select_biased,
 };
 use git::GitHostingProviderRegistry;
 use gpui::{App, AppContext as _, Context, Entity, UpdateGlobal as _};
@@ -33,7 +35,6 @@ use release_channel::{AppCommitSha, AppVersion, RELEASE_CHANNEL, ReleaseChannel}
 use remote::{
     RemoteClient,
     json_log::LogRecord,
-    protocol::{read_message, write_message},
     proxy::ProxyLaunchError,
 };
 use reqwest_client::ReqwestClient;
@@ -400,7 +401,7 @@ fn handle_crash_files_requests(project: &Entity<HeadlessProject>, client: &AnyPr
     );
 }
 
-struct ServerListeners {
+pub(crate) struct ServerListeners {
     stdin: UnixListener,
     stdout: UnixListener,
     stderr: UnixListener,
@@ -438,8 +439,8 @@ fn start_server(
     // FORK:end
 
     let (incoming_tx, incoming_rx) = mpsc::unbounded::<Envelope>();
-    let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<Envelope>();
-    let (app_quit_tx, mut app_quit_rx) = mpsc::unbounded::<()>();
+    let (outgoing_tx, outgoing_rx) = mpsc::unbounded::<Envelope>();
+    let (app_quit_tx, app_quit_rx) = mpsc::unbounded::<()>();
 
     cx.on_app_quit(move |_| {
         let mut app_quit_tx = app_quit_tx.clone();
@@ -450,111 +451,16 @@ fn start_server(
     })
     .detach();
 
-    cx.spawn(async move |cx| {
-        loop {
-            let streams = futures::future::join3(
-                listeners.stdin.accept(),
-                listeners.stdout.accept(),
-                listeners.stderr.accept(),
-            );
-
-            log::info!("accepting new connections");
-            // FORK:no-idle-quit
-            let result = select! {
-                streams = streams.fuse() => {
-                    let (Ok((stdin_stream, _)), Ok((stdout_stream, _)), Ok((stderr_stream, _))) = streams else {
-                        log::error!("failed to accept new connections");
-                        break;
-                    };
-                    log::info!("accepted new connections");
-                    anyhow::Ok((stdin_stream, stdout_stream, stderr_stream))
-                }
-                _ = app_quit_rx.next().fuse() => {
-                    log::info!("app quit requested");
-                    break;
-                }
-            };
-            // FORK:end
-
-            let Ok((mut stdin_stream, mut stdout_stream, mut stderr_stream)) = result else {
-                break;
-            };
-
-            let mut input_buffer = Vec::new();
-            let mut output_buffer = Vec::new();
-
-            let (mut stdin_msg_tx, mut stdin_msg_rx) = mpsc::unbounded::<Envelope>();
-            cx.background_spawn(async move {
-                loop {
-                    match read_message(&mut stdin_stream, &mut input_buffer).await {
-                        Ok(msg) => {
-                            if (stdin_msg_tx.send(msg).await).is_err() {
-                                log::info!("stdin message channel closed, stopping stdin reader");
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            log::warn!("stdin read failed: {error:?}");
-                            break;
-                        }
-                    }
-                }
-            }).detach();
-
-            loop {
-
-                select_biased! {
-                    _ = app_quit_rx.next().fuse() => {
-                        return anyhow::Ok(());
-                    }
-
-                    stdin_message = stdin_msg_rx.next().fuse() => {
-                        let Some(message) = stdin_message else {
-                            log::warn!("error reading message on stdin, dropping connection.");
-                            break;
-                        };
-                        if let Err(error) = incoming_tx.unbounded_send(message) {
-                            log::error!("failed to send message to application: {error:?}. exiting.");
-                            return Err(anyhow!(error));
-                        }
-                    }
-
-                    outgoing_message  = outgoing_rx.next().fuse() => {
-                        let Some(message) = outgoing_message else {
-                            log::error!("stdout handler, no message");
-                            break;
-                        };
-
-                        if let Err(error) =
-                            write_message(&mut stdout_stream, &mut output_buffer, message).await
-                        {
-                            log::error!("failed to write stdout message: {:?}", error);
-                            break;
-                        }
-                        if let Err(error) = stdout_stream.flush().await {
-                            log::error!("failed to flush stdout message: {:?}", error);
-                            break;
-                        }
-                    }
-
-                    log_message = log_rx.recv().fuse() => {
-                        if let Ok(log_message) = log_message {
-                            if let Err(error) = stderr_stream.write_all(&log_message).await {
-                                log::error!("failed to write log message to stderr: {:?}", error);
-                                break;
-                            }
-                            if let Err(error) = stderr_stream.flush().await {
-                                log::error!("failed to flush stderr stream: {:?}", error);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        anyhow::Ok(())
-    })
-    .detach();
+    // FORK:multi-gui
+    gui_mux::run(
+        listeners,
+        log_rx,
+        incoming_tx,
+        outgoing_rx,
+        app_quit_rx,
+        cx,
+    );
+    // FORK:end
 
     RemoteClient::proto_client_from_channels(incoming_rx, outgoing_tx, cx, "server", is_wsl_interop)
 }
@@ -585,6 +491,9 @@ pub fn execute_run(
     stderr_socket: PathBuf,
 ) -> Result<()> {
     init_paths()?;
+    // FORK:daemon-detach — survive SSH/proxy hangup; GUI is not the process group leader.
+    detach_from_controlling_terminal();
+    // FORK:end
 
     let startup_time = Instant::now();
     let app = gpui_platform::headless();
@@ -1150,11 +1059,12 @@ fn spawn_server_windows(binary_name: &Path, paths: &ServerPaths) -> Result<(), S
 
 #[cfg(not(windows))]
 fn spawn_server_normal(binary_name: &Path, paths: &ServerPaths) -> Result<(), SpawnServerError> {
-    let mut server_process = new_command(binary_name);
-    server_process
-        .stdin(util::command::Stdio::null())
-        .stdout(util::command::Stdio::null())
-        .stderr(util::command::Stdio::null())
+    // FORK:daemon-detach
+    let mut std_command = std::process::Command::new(binary_name);
+    std_command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .arg("run")
         .arg("--log-file")
         .arg(&paths.log_file)
@@ -1166,12 +1076,22 @@ fn spawn_server_normal(binary_name: &Path, paths: &ServerPaths) -> Result<(), Sp
         .arg(&paths.stdout_socket)
         .arg("--stderr-socket")
         .arg(&paths.stderr_socket);
-
-    server_process
+    util::set_pre_exec_to_start_new_session(&mut std_command);
+    smol::process::Command::from(std_command)
         .spawn()
         .map_err(SpawnServerError::ProcessStatus)?;
+    // FORK:end
 
     Ok(())
+}
+
+fn detach_from_controlling_terminal() {
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        libc::setsid();
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+    }
 }
 
 #[derive(Debug, Error)]

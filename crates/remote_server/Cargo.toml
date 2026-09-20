@@ -76,7 +76,14 @@ rayon.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 # FORK:session-host-init
 session_host.workspace = true
+session_protocol.workspace = true
 # FORK:end
+# FORK:multi-gui
+# session_protocol also used by gui_mux Envelope id remapping
+# FORK:end
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true

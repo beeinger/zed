@@ -53,6 +53,18 @@ pub struct SessionInfoWire {
     #[serde(default)]
     pub work_dirs: Vec<String>,
     pub updated_at: Option<String>,
+    /// Empty or omitted means the native Zed Agent.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// True while a turn is in flight on the daemon, even with no GUI attached.
+    #[serde(default)]
+    pub generating: bool,
+}
+
+/// GUI → daemon: summarize a native (or daemon-held) session for @-mentions.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadSummaryRequest {
+    pub session_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -121,5 +133,13 @@ mod tests {
         let json = serde_json::to_string(&request).expect("serialize");
         let parsed: SetCredentialsRequest = serde_json::from_str(&json).expect("parse");
         assert_eq!(parsed, request);
+    }
+
+    #[test]
+    fn session_info_wire_defaults_generating_false() {
+        let json = r#"{"session_id":"s1"}"#;
+        let parsed: SessionInfoWire = serde_json::from_str(json).expect("parse");
+        assert!(!parsed.generating);
+        assert!(parsed.agent_id.is_none());
     }
 }
