@@ -1,5 +1,7 @@
 //! Append-only agent event log. Disconnect does not rewind or drop entries.
 
+use std::path::Path;
+
 use crate::{CatchUpResponse, EventSeq};
 
 /// Server-side log of ACP JSON-RPC notifications (typically `session/update`).
@@ -37,6 +39,35 @@ impl EventLog {
             from_seq: last_seq.next(),
             to_seq: self.head(),
             events_json: self.events[start..].to_vec(),
+        }
+    }
+
+    /// Reload from a jsonl snapshot written by [`Self::append_jsonl`].
+    pub fn load_jsonl(path: &Path) -> Self {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
+        Self {
+            events: text
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect(),
+        }
+    }
+
+    /// Append one compact JSON line. Compact serde JSON has no raw newlines.
+    pub fn append_jsonl(path: &Path, json: &str) {
+        use std::io::Write as _;
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(file, "{json}");
         }
     }
 }
@@ -120,5 +151,20 @@ mod tests {
         let already_caught_up = log.catch_up(catch_up.to_seq);
         assert!(already_caught_up.is_empty());
         assert_eq!(already_caught_up.to_seq, EventSeq(2));
+    }
+
+    #[test]
+    fn jsonl_roundtrip_survives_process_bounce() {
+        let dir = std::env::temp_dir().join(format!("zed-event-log-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("event_log.jsonl");
+        EventLog::append_jsonl(&path, r#"{"n":1}"#);
+        EventLog::append_jsonl(&path, r#"{"n":2}"#);
+        let loaded = EventLog::load_jsonl(&path);
+        assert_eq!(loaded.head(), EventSeq(2));
+        let catch_up = loaded.catch_up(EventSeq(1));
+        assert_eq!(catch_up.events_json, vec![r#"{"n":2}"#.to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

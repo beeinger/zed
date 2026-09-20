@@ -83,10 +83,10 @@ use language::LanguageRegistry;
 use language_model::LanguageModelRegistry;
 use notifications::status_toast::StatusToast;
 use project::{Project, ProjectPath, Worktree};
+use search::{BufferSearchBar, buffer_search::Deploy as DeployBufferSearch};
+use session_client::RemoteAgentConnection;
 use settings::TerminalDockPosition;
 use settings::{NotifyWhenAgentWaiting, Settings, update_settings_file};
-
-use search::{BufferSearchBar, buffer_search::Deploy as DeployBufferSearch};
 use terminal::{Event as TerminalEvent, terminal_settings::TerminalSettings};
 use terminal_view::{TerminalView, terminal_panel::TerminalPanel};
 use text::OffsetRangeExt;
@@ -2983,7 +2983,8 @@ impl AgentPanel {
     }
 
     fn has_open_project(&self, cx: &App) -> bool {
-        self.project.read(cx).visible_worktrees(cx).next().is_some()
+        let project = self.project.read(cx);
+        project.visible_worktrees(cx).next().is_some() || project.is_via_remote_server()
     }
 
     fn ensure_native_agent_connection(&self, cx: &mut Context<Self>) {
@@ -4198,6 +4199,31 @@ impl AgentPanel {
                 }
             }
         }
+
+        // FORK:daemon-thread-list — the daemon owns the turn; a missing view is not a no-op.
+        if self.project.read(cx).is_via_remote_server() {
+            let Some(store) = ThreadMetadataStore::try_global(cx) else {
+                return false;
+            };
+            let Some(metadata) = store.read(cx).entry(*thread_id).cloned() else {
+                return false;
+            };
+            let Some(session_id) = metadata.session_id else {
+                return false;
+            };
+            return RemoteAgentConnection::cancel_on_project(
+                &self.project,
+                metadata.agent_id,
+                &session_id,
+                cx,
+            )
+            .map_err(|error| {
+                log::debug!("daemon session/cancel: {error:#}");
+                error
+            })
+            .is_ok();
+        }
+        // FORK:end
         false
     }
 

@@ -7,8 +7,9 @@ use agent::{DaemonPromptHandler as _, DaemonPromptWait};
 use agent_client_protocol::schema::v1 as acp;
 use agent_servers::{AcpConnection, DetachedAcpIo};
 use anyhow::{Context as _, Result, anyhow};
+use collections::HashMap;
 use gpui::{App, AsyncApp, Entity, SharedString, Task, WeakEntity};
-use project::{AgentId, agent_server_store::AgentServerCommand};
+use project::{AgentId, AgentServerStore, agent_server_store::AgentServerCommand};
 use session_protocol::{AcpConnectRequest, AcpConnectResponse, methods};
 use settings::AgentConfigOptionValue;
 use util::path_list::PathList;
@@ -312,10 +313,29 @@ impl SessionHost {
                     .map(|value| (key, value))
             })
             .collect();
-        let command = AgentServerCommand {
-            path: request.path.into(),
-            args: request.args,
-            env: Some(request.env.into_iter().collect()),
+        let extra_env: HashMap<String, String> = request.env.into_iter().collect();
+        let command = match resolve_host_command(
+            agent_server_store.clone(),
+            &agent_id,
+            extra_env.clone(),
+            cx,
+        )
+        .await
+        {
+            Ok(mut command) => {
+                if let Some(env) = command.env.as_mut() {
+                    env.extend(extra_env);
+                } else if !extra_env.is_empty() {
+                    command.env = Some(extra_env);
+                }
+                command
+            }
+            Err(error) if request.path.is_empty() => return Err(error),
+            Err(_) => AgentServerCommand {
+                path: request.path.into(),
+                args: request.args,
+                env: Some(extra_env),
+            },
         };
         let io: Rc<dyn DetachedAcpIo> = Rc::new(HostExternalIo {
             host: this.downgrade(),
@@ -463,10 +483,17 @@ impl SessionHost {
     ) -> Result<acp::PromptResponse> {
         let connection = Self::external_connection(&this, agent_id, cx)?;
         let (tx, rx) = futures::channel::oneshot::channel();
-        this.update(cx, |_host, cx| {
+        let session_id = request.session_id.clone();
+        this.update(cx, |host, cx| {
+            host.set_generating(&session_id, true, cx);
             let task = connection.prompt(request, cx);
-            cx.spawn(async move |_this, _cx| {
-                let _ = tx.send(task.await);
+            cx.spawn(async move |this, cx| {
+                let result = task.await;
+                this.update(cx, |host, cx| {
+                    host.set_generating(&session_id, false, cx);
+                })
+                .ok();
+                let _ = tx.send(result);
             })
             .detach();
         });
@@ -487,6 +514,22 @@ impl SessionHost {
         });
         Ok(())
     }
+}
+
+async fn resolve_host_command(
+    store: Entity<AgentServerStore>,
+    agent_id: &str,
+    extra_env: HashMap<String, String>,
+    cx: &mut AsyncApp,
+) -> Result<AgentServerCommand> {
+    let agent_id = AgentId::new(agent_id.to_string());
+    let command_task = store.update(cx, |store, cx| -> Result<_> {
+        let agent = store
+            .get_external_agent(&agent_id)
+            .with_context(|| format!("agent `{agent_id}` is not installed on this server"))?;
+        Ok(agent.get_command(Vec::new(), extra_env, &mut cx.to_async()))
+    })?;
+    command_task.await
 }
 
 fn permit_everything_permission_outcome(

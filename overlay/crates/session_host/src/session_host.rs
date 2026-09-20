@@ -209,7 +209,7 @@ impl SessionHost {
             agent,
             config,
             session: init.session.clone(),
-            log: EventLog::new(),
+            log: EventLog::load_jsonl(&event_log_path()),
             daemon_threads: HashMap::new(),
             external_agents: HashMap::new(),
             gui_attached_tx,
@@ -258,14 +258,17 @@ impl SessionHost {
     ) {
         if let Some((thought, text)) = delta_text(&session_notification.update) {
             let key = (session_notification.session_id.to_string(), thought);
-            let pending = self.pending_deltas.entry(key).or_insert_with(|| PendingDelta {
-                session_id: session_notification.session_id.clone(),
-                thought,
-                text: String::new(),
-                started_at: Instant::now(),
-                persist,
-                agent_id: agent_id.to_string(),
-            });
+            let pending = self
+                .pending_deltas
+                .entry(key)
+                .or_insert_with(|| PendingDelta {
+                    session_id: session_notification.session_id.clone(),
+                    thought,
+                    text: String::new(),
+                    started_at: Instant::now(),
+                    persist,
+                    agent_id: agent_id.to_string(),
+                });
             pending.text.push_str(&text);
             pending.persist |= persist;
             let waited = pending.started_at.elapsed();
@@ -309,8 +312,7 @@ impl SessionHost {
             } else {
                 acp::SessionUpdate::AgentMessageChunk(chunk)
             };
-            let notification =
-                acp::SessionNotification::new(pending.session_id, update);
+            let notification = acp::SessionNotification::new(pending.session_id, update);
             self.push_session_update(notification, pending.persist, &pending.agent_id, cx);
         }
     }
@@ -330,7 +332,9 @@ impl SessionHost {
             }
         };
         let seq = if persist {
-            self.log.append(json.clone()).0
+            let seq = self.log.append(json.clone()).0;
+            EventLog::append_jsonl(&event_log_path(), &json);
+            seq
         } else {
             0
         };
@@ -506,6 +510,10 @@ fn delta_text(update: &acp::SessionUpdate) -> Option<(bool, String)> {
     } else {
         Some((thought, text.to_string()))
     }
+}
+
+fn event_log_path() -> std::path::PathBuf {
+    paths::remote_server_state_dir().join("event_log.jsonl")
 }
 
 /// Construct NativeAgent on the daemon and register Envelope handlers.

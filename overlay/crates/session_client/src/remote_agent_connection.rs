@@ -23,9 +23,9 @@ use project::{AgentId, Project, agent_server_store::AgentServerCommand};
 use rpc::{AnyProtoClient, TypedEnvelope, proto};
 use session_protocol::{
     AUTHORIZATION_KIND_META, AcpConnectRequest, AcpConnectResponse, CatchUpResponse,
-    DeleteSessionRequest, EventSeq, INTERNAL_ERROR, INVALID_PARAMS, JsonRpcMessage,
-    ModelListWire, NATIVE_AGENT_ID, SessionListWire, SessionModelRequest, ThreadSummaryRequest,
-    error_response, methods, notification, request,
+    DeleteSessionRequest, EventSeq, INTERNAL_ERROR, INVALID_PARAMS, JsonRpcMessage, ModelListWire,
+    NATIVE_AGENT_ID, SessionListWire, SessionModelRequest, ThreadSummaryRequest, error_response,
+    methods, notification, request,
 };
 use settings::Settings as _;
 use std::path::PathBuf;
@@ -205,6 +205,35 @@ impl RemoteAgentConnection {
         } else {
             self.agent_id.to_string()
         }
+    }
+
+    /// Cancel a daemon-owned turn even if this GUI has no ConversationView.
+    pub fn cancel_on_project(
+        project: &Entity<Project>,
+        agent_id: AgentId,
+        session_id: &acp::SessionId,
+        cx: &mut App,
+    ) -> Result<()> {
+        let remote = project
+            .read(cx)
+            .remote_client()
+            .context("project is not via remote server")?;
+        let remote_id = remote.entity_id();
+        let proto = remote.read(cx).proto_client();
+        let session = session_for_remote(remote_id, proto, cx);
+        let request_elicitations = session.read(cx).request_elicitations.clone();
+        let connection = Self {
+            session,
+            agent_id,
+            telemetry_id: SharedString::default(),
+            agent_version: None,
+            auth_methods: Vec::new(),
+            load_session: true,
+            resume_session: true,
+            request_elicitations,
+        };
+        connection.cancel(session_id, cx);
+        Ok(())
     }
 
     fn next_id(&self, cx: &mut App) -> i64 {
@@ -528,8 +557,8 @@ impl AgentConnection for RemoteAgentConnection {
         let subscribe = self.subscribe(last_seq, cx);
         cx.spawn(async move |cx| {
             let response = create.await?;
-            let thread =
-                cx.update(|cx| this.open_local_thread(response.session_id, project, work_dirs, cx))?;
+            let thread = cx
+                .update(|cx| this.open_local_thread(response.session_id, project, work_dirs, cx))?;
             let catch_up = subscribe.await?;
             cx.update(|cx| {
                 apply_catch_up(&thread, &catch_up_from_proto(&catch_up), cx)?;
@@ -788,9 +817,7 @@ pub async fn connect_external_agent(
     connection.load_session = response.load_session;
     connection.resume_session = response.resume_session;
     let last_seq = cx.update(|cx| connection.session.read(cx).global_last_seq);
-    let catch_up = cx
-        .update(|cx| connection.subscribe(last_seq, cx))
-        .await?;
+    let catch_up = cx.update(|cx| connection.subscribe(last_seq, cx)).await?;
     cx.update(|cx| {
         connection.session.update(cx, |session, _| {
             session.global_last_seq = session.global_last_seq.max(catch_up.to_seq);
@@ -842,13 +869,18 @@ impl AgentSessionList for RemoteAgentSessionList {
         _request: AgentSessionListRequest,
         cx: &mut App,
     ) -> Task<Result<AgentSessionListResponse>> {
-        let task = self
-            .connection
-            .rpc::<SessionListWire>(methods::SESSION_LIST, serde_json::json!({}), cx);
+        let task = self.connection.rpc::<SessionListWire>(
+            methods::SESSION_LIST,
+            serde_json::json!({}),
+            cx,
+        );
         cx.spawn(async move |_| {
             let wire = task.await?;
             Ok(AgentSessionListResponse::new(
-                wire.sessions.into_iter().map(session_info_from_wire).collect(),
+                wire.sessions
+                    .into_iter()
+                    .map(session_info_from_wire)
+                    .collect(),
             ))
         })
     }

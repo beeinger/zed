@@ -16676,6 +16676,7 @@ dependencies = [
  "anyhow",
  "client",
  "clock",
+ "collections",
  "credentials_provider",
  "fs",
  "futures 0.3.34",
