@@ -42,6 +42,8 @@ pub struct BufferStore {
     shared_buffers: HashMap<proto::PeerId, HashMap<BufferId, SharedBuffer>>,
     non_searchable_buffers: HashSet<BufferId>,
     project_search: RemoteProjectSearchState,
+    // FORK:server-buffer-authority — keep dirty buffers after the GUI closes its replica
+    retained_buffers: HashMap<BufferId, Entity<Buffer>>,
 }
 
 #[derive(Default)]
@@ -854,6 +856,9 @@ impl BufferStore {
             non_searchable_buffers: Default::default(),
             worktree_store,
             project_search: Default::default(),
+            // FORK:server-buffer-authority
+            retained_buffers: Default::default(),
+            // FORK:end
         }
     }
 
@@ -880,6 +885,9 @@ impl BufferStore {
             non_searchable_buffers: Default::default(),
             worktree_store,
             project_search: Default::default(),
+            // FORK:server-buffer-authority
+            retained_buffers: Default::default(),
+            // FORK:end
         }
     }
 
@@ -1475,6 +1483,18 @@ impl BufferStore {
                 .await?;
         }
 
+        this.update(&mut cx, |this, cx| {
+            // FORK:server-buffer-authority
+            if this
+                .retained_buffers
+                .get(&buffer_id)
+                .is_some_and(|buffer| !buffer.read(cx).is_dirty())
+            {
+                this.retained_buffers.remove(&buffer_id);
+            }
+            // FORK:end
+        });
+
         Ok(buffer.read_with(&cx, |buffer, _| proto::BufferSaved {
             project_id,
             buffer_id: buffer_id.into(),
@@ -1491,12 +1511,20 @@ impl BufferStore {
         let peer_id = envelope.sender_id;
         let buffer_id = BufferId::new(envelope.payload.buffer_id)?;
         this.update(&mut cx, |this, cx| {
+            // FORK:server-buffer-authority
+            // Drop only the peer share. Dirty (and still-open) buffers stay on
+            // the daemon so an agent turn or reconnect does not lose text.
             if let Some(shared) = this.shared_buffers.get_mut(&peer_id)
-                && shared.remove(&buffer_id).is_some()
+                && let Some(shared_buffer) = shared.remove(&buffer_id)
             {
                 cx.emit(BufferStoreEvent::SharedBufferClosed(peer_id, buffer_id));
                 if shared.is_empty() {
                     this.shared_buffers.remove(&peer_id);
+                }
+                let is_dirty = shared_buffer.buffer.read(cx).is_dirty();
+                if is_dirty {
+                    this.retained_buffers
+                        .insert(buffer_id, shared_buffer.buffer);
                 }
                 return;
             }
@@ -1505,6 +1533,7 @@ impl BufferStore {
                 peer_id,
                 buffer_id
             )
+            // FORK:end
         });
         Ok(())
     }
@@ -1534,6 +1563,15 @@ impl BufferStore {
                     })
                     .log_err();
             }
+            // FORK:server-buffer-authority
+            if this
+                .retained_buffers
+                .get(&buffer_id)
+                .is_some_and(|buffer| !buffer.read(cx).is_dirty())
+            {
+                this.retained_buffers.remove(&buffer_id);
+            }
+            // FORK:end
         });
         Ok(())
     }
