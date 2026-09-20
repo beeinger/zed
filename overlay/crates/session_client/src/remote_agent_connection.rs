@@ -16,16 +16,16 @@ use agent_client_protocol::schema::v1 as acp;
 use anyhow::{Context as _, Result, anyhow};
 use collections::{HashMap, IndexMap};
 use gpui::{
-    App, AppContext as _, AsyncApp, Entity, EntityId, Global, SharedString, Task, TaskExt as _,
-    WeakEntity,
+    App, AppContext as _, AsyncApp, Entity, EntityId, EventEmitter, Global, SharedString, Task,
+    TaskExt as _, WeakEntity,
 };
 use project::{AgentId, Project, agent_server_store::AgentServerCommand};
 use rpc::{AnyProtoClient, TypedEnvelope, proto};
 use session_protocol::{
     AUTHORIZATION_KIND_META, AcpConnectRequest, AcpConnectResponse, CatchUpResponse,
     DeleteSessionRequest, EventSeq, INTERNAL_ERROR, INVALID_PARAMS, JsonRpcMessage,
-    ModelListWire, NATIVE_AGENT_ID, SessionListWire, SessionModelRequest, error_response, methods,
-    notification, request,
+    ModelListWire, NATIVE_AGENT_ID, SessionListWire, SessionModelRequest, ThreadSummaryRequest,
+    error_response, methods, notification, request,
 };
 use settings::Settings as _;
 use std::path::PathBuf;
@@ -61,6 +61,12 @@ struct RemoteAgentSession {
     global_last_seq: u64,
     request_elicitations: Entity<ElicitationStore>,
 }
+
+/// Daemon sent `zed/session_list_changed` (full list).
+#[derive(Clone, Debug)]
+pub struct SessionListUpdated(pub SessionListWire);
+
+impl EventEmitter<SessionListUpdated> for RemoteAgentSession {}
 
 fn session_for_remote(
     remote_client_id: EntityId,
@@ -237,6 +243,38 @@ impl RemoteAgentConnection {
             parsed.result_as()
         })
     }
+
+    pub fn thread_summary(
+        &self,
+        session_id: acp::SessionId,
+        cx: &mut App,
+    ) -> Task<Result<SharedString>> {
+        let task = self.rpc::<String>(
+            methods::THREAD_SUMMARY,
+            ThreadSummaryRequest {
+                session_id: session_id.to_string(),
+            },
+            cx,
+        );
+        cx.spawn(async move |_| Ok(SharedString::from(task.await?)))
+    }
+
+    pub fn fetch_session_list(&self, cx: &mut App) -> Task<Result<SessionListWire>> {
+        self.rpc(methods::SESSION_LIST, serde_json::json!({}), cx)
+    }
+
+    pub fn watch_session_list<T: 'static>(
+        &self,
+        cx: &mut gpui::Context<T>,
+        on_update: impl Fn(&mut T, SessionListWire, &mut gpui::Context<T>) + 'static,
+    ) -> gpui::Subscription {
+        cx.subscribe(
+            &self.session,
+            move |this, _session, event: &SessionListUpdated, cx| {
+                on_update(this, event.0.clone(), cx);
+            },
+        )
+    }
 }
 
 impl RemoteAgentSession {
@@ -303,12 +341,30 @@ impl RemoteAgentSession {
         if incoming.method_name() == Some(methods::ELICITATION_CREATE) {
             return Self::handle_create_elicitation(this, incoming, &mut cx).await;
         }
+        if incoming.method_name() == Some(methods::SESSION_LIST_CHANGED) {
+            match incoming.params_as::<SessionListWire>() {
+                Ok(list) => {
+                    this.update(&mut cx, |_session, cx| {
+                        cx.emit(SessionListUpdated(list));
+                    });
+                }
+                Err(error) => {
+                    log::warn!("invalid zed/session_list_changed params: {error:#}");
+                }
+            }
+            return Ok(proto::SessionAgentRpc {
+                json: session_protocol::success(incoming.id, serde_json::json!({}))
+                    .unwrap_or_else(|_| error_response(None, INTERNAL_ERROR, "serialize")),
+                seq: 0,
+                agent_id: String::new(),
+            });
+        }
 
         Ok(proto::SessionAgentRpc {
             json: error_response(
                 incoming.id,
                 session_protocol::METHOD_NOT_FOUND,
-                "GUI only accepts session/update, session/request_permission, and elicitation/create from the daemon",
+                "GUI only accepts session/update, session/request_permission, elicitation/create, and zed/session_list_changed from the daemon",
             ),
             seq: 0,
             agent_id: String::new(),

@@ -112,7 +112,7 @@ impl SessionHost {
                 }
                 Err(error) => error_response(id, INVALID_PARAMS, error.to_string()),
             },
-            methods::SESSION_LIST => match Self::session_list(this, cx).await {
+            methods::SESSION_LIST => match Self::session_list_wire(this, cx).await {
                 Ok(response) => success_or_internal(id, response),
                 Err(error) => error_response(id, INTERNAL_ERROR, error.to_string()),
             },
@@ -164,6 +164,15 @@ impl SessionHost {
                 }
                 Err(error) => error_response(id, INVALID_PARAMS, error.to_string()),
             },
+            methods::THREAD_SUMMARY => match incoming
+                .params_as::<session_protocol::ThreadSummaryRequest>()
+            {
+                Ok(request) => match Self::thread_summary(this, request, cx).await {
+                    Ok(summary) => success_or_internal(id, summary),
+                    Err(error) => error_response(id, INTERNAL_ERROR, error.to_string()),
+                },
+                Err(error) => error_response(id, INVALID_PARAMS, error.to_string()),
+            },
             other => error_response(id, METHOD_NOT_FOUND, format!("method not found: {other}")),
         }
     }
@@ -192,7 +201,11 @@ impl SessionHost {
                 connection.new_session(host.project.clone(), work_dirs, cx)
             })
             .await?;
-        let session_id = this.update(cx, |host, cx| host.retain_daemon_thread(thread, cx));
+        let session_id = this.update(cx, |host, cx| {
+            let id = host.retain_daemon_thread(thread, cx);
+            host.notify_session_list_changed(cx);
+            id
+        });
         Ok(NewSessionResponse::new(session_id))
     }
 
@@ -215,6 +228,7 @@ impl SessionHost {
             .await?;
         this.update(cx, |host, cx| {
             host.retain_daemon_thread(thread, cx);
+            host.notify_session_list_changed(cx);
         });
         Ok(LoadSessionResponse::new())
     }
@@ -225,11 +239,17 @@ impl SessionHost {
         cx: &mut AsyncApp,
     ) -> Result<agent_client_protocol::schema::v1::PromptResponse> {
         let (tx, rx) = futures::channel::oneshot::channel();
+        let session_id = request.session_id.clone();
         this.update(cx, |host, cx| {
+            host.set_generating(&session_id, true, cx);
             let connection = NativeAgentConnection(host.agent.clone());
             let task = connection.prompt(request, cx);
-            cx.spawn(async move |_this, _cx| {
+            cx.spawn(async move |this, cx| {
                 let result = task.await;
+                this.update(cx, |host, cx| {
+                    host.set_generating(&session_id, false, cx);
+                })
+                .ok();
                 let _ = tx.send(result);
             })
             .detach();
@@ -250,24 +270,43 @@ impl SessionHost {
         Ok(())
     }
 
-    async fn session_list(
+    pub(crate) async fn session_list_wire(
         this: Entity<Self>,
         cx: &mut AsyncApp,
     ) -> Result<SessionListWire> {
-        let task = this
+        let generating = this.update(cx, |host, _cx| host.generating_sessions.clone());
+        let native_task = this
             .update(cx, |host, cx| {
                 NativeAgentConnection(host.agent.clone())
                     .session_list(cx)
                     .map(|list| list.list_sessions(AgentSessionListRequest::default(), cx))
             })
             .context("session list unavailable")?;
-        let response = task.await.context("list native agent sessions")?;
-        Ok(SessionListWire {
-            sessions: response
-                .sessions
-                .into_iter()
-                .map(|info| session_protocol::SessionInfoWire {
-                    session_id: info.session_id.to_string(),
+        let external_tasks = this.update(cx, |host, cx| {
+            host.external_agents
+                .iter()
+                .filter_map(|(agent_id, agent)| {
+                    agent
+                        .connection
+                        .session_list(cx)
+                        .map(|list| {
+                            (
+                                agent_id.clone(),
+                                list.list_sessions(AgentSessionListRequest::default(), cx),
+                            )
+                        })
+                })
+                .collect::<Vec<_>>()
+        });
+        let response = native_task.await.context("list native agent sessions")?;
+        let mut sessions: Vec<session_protocol::SessionInfoWire> = response
+            .sessions
+            .into_iter()
+            .map(|info| {
+                let session_id = info.session_id.to_string();
+                let is_generating = generating.contains(&session_id);
+                session_protocol::SessionInfoWire {
+                    session_id,
                     title: info.title.map(|title| title.to_string()),
                     work_dirs: info
                         .work_dirs
@@ -279,9 +318,50 @@ impl SessionHost {
                         })
                         .unwrap_or_default(),
                     updated_at: info.updated_at.map(|time| time.to_rfc3339()),
-                })
-                .collect(),
-        })
+                    agent_id: None,
+                    generating: is_generating,
+                }
+            })
+            .collect();
+        for (agent_id, task) in external_tasks {
+            if let Ok(response) = task.await {
+                for info in response.sessions {
+                    let session_id = info.session_id.to_string();
+                    let is_generating = generating.contains(&session_id);
+                    sessions.push(session_protocol::SessionInfoWire {
+                        session_id,
+                        title: info.title.map(|title| title.to_string()),
+                        work_dirs: info
+                            .work_dirs
+                            .map(|paths| {
+                                paths
+                                    .ordered_paths()
+                                    .map(|path| path.display().to_string())
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        updated_at: info.updated_at.map(|time| time.to_rfc3339()),
+                        agent_id: Some(agent_id.clone()),
+                        generating: is_generating,
+                    });
+                }
+            }
+        }
+        Ok(SessionListWire { sessions })
+    }
+
+    async fn thread_summary(
+        this: Entity<Self>,
+        request: session_protocol::ThreadSummaryRequest,
+        cx: &mut AsyncApp,
+    ) -> Result<String> {
+        let session_id = acp::SessionId::new(request.session_id);
+        let task = this.update(cx, |host, cx| {
+            host.agent.update(cx, |agent, cx| {
+                agent.thread_summary(session_id, host.project.clone(), cx)
+            })
+        });
+        Ok(task.await?.to_string())
     }
 
     async fn session_delete(
@@ -297,7 +377,9 @@ impl SessionHost {
                     .map(|list| list.delete_session(&session_id, cx))
             })
             .context("session delete unavailable")?;
-        task.await.context("delete native agent session")
+        task.await.context("delete native agent session")?;
+        this.update(cx, |host, cx| host.notify_session_list_changed(cx));
+        Ok(())
     }
 
     async fn session_delete_all(this: Entity<Self>, cx: &mut AsyncApp) -> Result<()> {
@@ -308,7 +390,9 @@ impl SessionHost {
                     .map(|list| list.delete_sessions(cx))
             })
             .context("session delete-all unavailable")?;
-        task.await.context("delete native agent sessions")
+        task.await.context("delete native agent sessions")?;
+        this.update(cx, |host, cx| host.notify_session_list_changed(cx));
+        Ok(())
     }
 
     async fn list_models(

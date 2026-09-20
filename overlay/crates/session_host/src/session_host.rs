@@ -10,7 +10,7 @@ mod dirty_buffers;
 mod external_acp;
 mod gui_prompts;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -145,6 +145,7 @@ pub struct SessionHost {
     pending_deltas: HashMap<(String, bool), PendingDelta>,
     coalesce_flush: Option<Task<()>>,
     buffer_subscriptions: Vec<Subscription>,
+    generating_sessions: HashSet<String>,
 }
 
 struct PendingDelta {
@@ -218,6 +219,7 @@ impl SessionHost {
             pending_deltas: HashMap::new(),
             coalesce_flush: None,
             buffer_subscriptions: Vec::new(),
+            generating_sessions: HashSet::new(),
         });
 
         host.update(cx, |host, cx| {
@@ -373,6 +375,61 @@ impl SessionHost {
     fn notify_gui_attached(&mut self) {
         self.gui_generation = self.gui_generation.wrapping_add(1);
         let _ = self.gui_attached_tx.send(self.gui_generation);
+    }
+
+    pub(crate) fn set_generating(
+        &mut self,
+        session_id: &acp::SessionId,
+        generating: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let key = session_id.to_string();
+        let changed = if generating {
+            self.generating_sessions.insert(key)
+        } else {
+            self.generating_sessions.remove(&key)
+        };
+        if changed {
+            self.notify_session_list_changed(cx);
+        }
+    }
+
+    pub(crate) fn session_is_generating(&self, session_id: &str) -> bool {
+        self.generating_sessions.contains(session_id)
+    }
+
+    pub(crate) fn notify_session_list_changed(&mut self, cx: &mut Context<Self>) {
+        let proto = self.session.clone();
+        cx.spawn(async move |this, cx| {
+            let Some(this) = this.upgrade() else {
+                return;
+            };
+            let list = match crate::SessionHost::session_list_wire(this, cx).await {
+                Ok(list) => list,
+                Err(error) => {
+                    log::debug!("session list for GUI notify: {error:#}");
+                    return;
+                }
+            };
+            let json = match notification(methods::SESSION_LIST_CHANGED, &list) {
+                Ok(json) => json,
+                Err(error) => {
+                    log::error!("serialize zed/session_list_changed: {error:#}");
+                    return;
+                }
+            };
+            if let Err(error) = proto
+                .request(proto::SessionAgentRpc {
+                    json,
+                    seq: 0,
+                    agent_id: String::new(),
+                })
+                .await
+            {
+                log::debug!("session_list_changed skipped (no GUI?): {error:#}");
+            }
+        })
+        .detach();
     }
 
     async fn handle_subscribe(

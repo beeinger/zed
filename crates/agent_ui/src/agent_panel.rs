@@ -1608,6 +1608,11 @@ impl AgentPanel {
         };
 
         panel.ensure_native_agent_connection(cx);
+        // FORK:daemon-thread-list
+        ThreadMetadataStore::global(cx).update(cx, |store, cx| {
+            store.watch_daemon(project.clone(), cx);
+        });
+        // FORK:end
         panel
     }
 
@@ -2995,6 +3000,11 @@ impl AgentPanel {
                 cx,
             );
         });
+        // FORK:daemon-thread-list
+        ThreadMetadataStore::global(cx).update(cx, |store, cx| {
+            store.watch_daemon(self.project.clone(), cx);
+        });
+        // FORK:end
     }
 
     pub fn activate_draft(

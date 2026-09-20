@@ -10212,9 +10212,7 @@ pub async fn restore_multiworkspace(
         .await
     } else {
         // FORK:local-daemon-default
-        let daemon_result = if active_workspace.paths.paths().iter().any(|path| path.is_dir())
-            && let Some(open) = OPEN_LOCAL_VIA_DAEMON.get()
-        {
+        let daemon_result = if let Some(open) = OPEN_LOCAL_VIA_DAEMON.get() {
             Some(
                 cx.update(|cx| {
                     open(
@@ -10273,9 +10271,7 @@ pub async fn restore_multiworkspace(
                 match cx
                     .update(|cx| {
                         // FORK:local-daemon-default
-                        if paths.iter().any(|path| path.is_dir())
-                            && let Some(open) = OPEN_LOCAL_VIA_DAEMON.get()
-                        {
+                        if let Some(open) = OPEN_LOCAL_VIA_DAEMON.get() {
                             return open(
                                 paths,
                                 app_state.clone(),
@@ -11034,17 +11030,30 @@ pub fn open_local_via_daemon_registered() -> bool {
     OPEN_LOCAL_VIA_DAEMON.get().is_some()
 }
 
-    #[allow(dead_code)]
-    fn try_open_local_via_daemon(
+/// Project root for the local daemon: a directory if present, otherwise the
+/// parent of the first file (so file-only opens still share a host process).
+pub fn local_daemon_project_root(abs_paths: &[PathBuf]) -> Option<PathBuf> {
+    abs_paths
+        .iter()
+        .find(|path| path.is_dir())
+        .cloned()
+        .or_else(|| {
+            abs_paths.first().and_then(|path| {
+                path.parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map(Path::to_path_buf)
+                    .or_else(|| Some(path.clone()))
+            })
+        })
+}
+
+fn try_open_local_via_daemon(
     abs_paths: Vec<PathBuf>,
     app_state: Arc<AppState>,
     open_options: OpenOptions,
     cx: &mut App,
 ) -> Option<Task<anyhow::Result<OpenResult>>> {
     // FORK:local-daemon-default
-    if !abs_paths.iter().any(|path| path.is_dir()) {
-        return None;
-    }
     OPEN_LOCAL_VIA_DAEMON
         .get()
         .map(|open| open(abs_paths, app_state, open_options, cx))
@@ -11191,7 +11200,7 @@ pub fn open_paths(
         // FORK:local-daemon-default
         if existing.is_none()
             && OPEN_LOCAL_VIA_DAEMON.get().is_some()
-            && let Some(project_root) = abs_paths.iter().find(|path| path.is_dir()).cloned()
+            && let Some(project_root) = local_daemon_project_root(&abs_paths)
         {
             let remote_location = SerializedWorkspaceLocation::Remote(
                 RemoteConnectionOptions::Local(LocalConnectionOptions {
@@ -11334,32 +11343,28 @@ pub fn open_paths(
                 None
             };
             // FORK:local-daemon-default
-            let result = if abs_paths.iter().any(|path| path.is_dir())
-                && let Some(open) = OPEN_LOCAL_VIA_DAEMON.get()
-            {
-                cx.update(|cx| {
-                    open(
-                        abs_paths,
+            let result = cx
+                .update(|cx| {
+                    if let Some(task) = try_open_local_via_daemon(
+                        abs_paths.clone(),
                         app_state.clone(),
                         open_options.clone(),
                         cx,
-                    )
+                    ) {
+                        task
+                    } else {
+                        Workspace::new_local(
+                            abs_paths,
+                            app_state.clone(),
+                            open_options.requesting_window,
+                            open_options.env,
+                            init,
+                            open_options.open_mode,
+                            cx,
+                        )
+                    }
                 })
-                .await
-            } else {
-                cx.update(move |cx| {
-                    Workspace::new_local(
-                        abs_paths,
-                        app_state.clone(),
-                        open_options.requesting_window,
-                        open_options.env,
-                        init,
-                        open_options.open_mode,
-                        cx,
-                    )
-                })
-                .await
-            };
+                .await;
             // FORK:end
 
             if let Ok(ref result) = result {

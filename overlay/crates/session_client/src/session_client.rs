@@ -6,8 +6,10 @@
 
 mod remote_agent_connection;
 
-pub use remote_agent_connection::{RemoteAgentConnection, apply_catch_up, connect_external_agent};
-pub use session_protocol::daemon_socket_id;
+pub use remote_agent_connection::{
+    RemoteAgentConnection, SessionListUpdated, apply_catch_up, connect_external_agent,
+};
+pub use session_protocol::{SessionListWire, daemon_socket_id};
 
 /// Register GUI-side hooks (credential forwarding to daemon-held agents).
 pub fn init() {

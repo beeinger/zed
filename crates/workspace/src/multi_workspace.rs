@@ -1263,9 +1263,7 @@ impl MultiWorkspace {
                 return Ok(workspace);
             }
 
-            let result = if effective_path_list.paths().iter().any(|path| path.is_dir())
-                && let Some(open) = OPEN_LOCAL_VIA_DAEMON.get()
-            {
+            let result = if let Some(open) = OPEN_LOCAL_VIA_DAEMON.get() {
                 // FORK:local-daemon-default
                 cx.update(|cx| {
                     open(

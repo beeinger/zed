@@ -335,8 +335,9 @@ impl SessionHost {
         let connection = Rc::new(connection);
         let agent = ExternalAgent::from_connection(connection);
         let response = agent.connect_response()?;
-        this.update(cx, |host, _cx| {
+        this.update(cx, |host, cx| {
             host.external_agents.insert(agent_id, agent);
+            host.notify_session_list_changed(cx);
         });
         Ok(response)
     }
@@ -381,6 +382,7 @@ impl SessionHost {
                 if let Ok(thread) = &result {
                     let _ = this.update(cx, |host, cx| {
                         host.retain_daemon_thread(thread.clone(), cx);
+                        host.notify_session_list_changed(cx);
                     });
                 }
                 let _ = tx.send(result);
@@ -424,6 +426,7 @@ impl SessionHost {
                 if let Ok(thread) = &result {
                     let _ = this.update(cx, |host, cx| {
                         host.retain_daemon_thread(thread.clone(), cx);
+                        host.notify_session_list_changed(cx);
                     });
                 }
                 let _ = tx.send(result);

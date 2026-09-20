@@ -25,8 +25,15 @@ The mission:
 - Native Zed Agent on a remote (or local-daemon) project uses
   `RemoteAgentConnection`. The GUI never constructs in-process `NativeAgent`
   for those projects.
-- Production folder open uses the local unix-socket daemon. Tests keep
+- Production local open uses the unix-socket daemon for folders **and**
+  file-only opens (parent directory is the daemon id). Tests keep
   `Project::local`.
+- Several GUIs can attach to one daemon at once (Envelope ids remapped).
+  SSH/`run` is `setsid` + SIGHUP ignored so dropping the proxy does not
+  kill the host. `serve` + systemd/launchd remains the service entry.
+- The threads sidebar lists daemon sessions (native and ACP) with live
+  generating status, including threads that are not open in this GUI.
+  Switching workspace does not cancel daemon turns.
 - Dirty buffers stay on the daemon after the GUI closes its replica, and are
   snapshotted under the server state dir.
 - The remote Envelope stream is zstd-compressed (legacy uncompressed frames

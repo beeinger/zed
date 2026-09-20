@@ -52,6 +52,7 @@ APPLIED detach-external-acp crates/agent_servers/src/acp.rs
 APPLIED detach-external-acp crates/agent_servers/Cargo.toml
 APPLIED remote-native-agent crates/agent_ui/src/agent_ui.rs
 APPLIED remote-native-agent crates/agent_ui/Cargo.toml
+APPLIED remote-native-agent crates/agent_ui/src/mention_set.rs
 APPLIED local-daemon-default crates/workspace/src/workspace.rs
 APPLIED local-daemon-default crates/workspace/src/multi_workspace.rs
 APPLIED local-daemon-default crates/zed/src/zed.rs
@@ -66,6 +67,9 @@ APPLIED multi-gui crates/remote_server/src/server.rs
 APPLIED multi-gui crates/remote_server/src/gui_mux.rs
 APPLIED multi-gui crates/remote_server/Cargo.toml
 APPLIED daemon-detach crates/remote_server/src/server.rs
+APPLIED daemon-thread-list crates/agent_ui/src/agent_panel.rs
+APPLIED daemon-thread-list crates/agent_ui/src/thread_metadata_store.rs
+APPLIED daemon-thread-status crates/sidebar/src/sidebar.rs
 
 ## Planned (not yet in tree)
 

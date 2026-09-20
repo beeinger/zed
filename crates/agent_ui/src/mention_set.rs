@@ -610,13 +610,31 @@ impl MentionSet {
         id: acp::SessionId,
         cx: &mut Context<Self>,
     ) -> Task<Result<Mention>> {
+        let Some(project) = self.project.upgrade() else {
+            return Task::ready(Err(anyhow!("project not found")));
+        };
+
+        // FORK:remote-native-agent — never construct GUI NativeAgent on a daemon project.
+        if project.read(cx).is_via_remote_server() {
+            return match session_client::RemoteAgentConnection::for_project(&project, cx) {
+                Ok(connection) => {
+                    let task = connection.thread_summary(id, cx);
+                    cx.spawn(async move |_, _cx| {
+                        Ok(Mention::Text {
+                            content: task.await?.to_string(),
+                            tracked_buffers: Vec::new(),
+                        })
+                    })
+                }
+                Err(error) => Task::ready(Err(error)),
+            };
+        }
+        // FORK:end
+
         let Some(thread_store) = self.thread_store.clone() else {
             return Task::ready(Err(anyhow!(
                 "Thread mentions are only supported for the native agent"
             )));
-        };
-        let Some(project) = self.project.upgrade() else {
-            return Task::ready(Err(anyhow!("project not found")));
         };
 
         let server = Rc::new(agent::NativeAgentServer::new(

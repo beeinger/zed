@@ -20,13 +20,14 @@ use db::{
 };
 use fs::Fs;
 use futures::{FutureExt, future::Shared};
-use gpui::{AppContext as _, Entity, Global, Subscription, Task, TaskExt};
+use gpui::{AppContext as _, Entity, EntityId, Global, Subscription, Task, TaskExt};
 pub use project::WorktreePaths;
-use project::{AgentId, linked_worktree_short_name};
+use project::{AgentId, Project, linked_worktree_short_name};
 use remote::{RemoteConnectionOptions, same_remote_connection_identity};
 use ui::{App, Context, SharedString, ThreadItemWorktreeInfo, WorktreeKind};
 use util::ResultExt as _;
 use workspace::{PathList, SerializedWorkspaceLocation, WorkspaceDb};
+use session_client::SessionListWire;
 
 use crate::DEFAULT_THREAD_TITLE;
 
@@ -505,6 +506,8 @@ pub struct ThreadMetadataStore {
     threads_by_session: HashMap<acp::SessionId, ThreadId>,
     reload_task: Option<Shared<Task<()>>>,
     conversation_subscriptions: HashMap<gpui::EntityId, Subscription>,
+    daemon_watches: HashMap<EntityId, Subscription>,
+    generating_sessions: HashSet<acp::SessionId>,
     pending_thread_ops_tx: async_channel::Sender<DbOperation>,
     in_flight_archives: HashMap<ThreadId, (Task<()>, async_channel::Sender<()>)>,
     _db_operations_task: Task<()>,
@@ -697,6 +700,114 @@ impl ThreadMetadataStore {
         self.save_internal(metadata);
         cx.notify();
     }
+
+    pub fn session_is_generating(&self, session_id: &acp::SessionId) -> bool {
+        self.generating_sessions.contains(session_id)
+    }
+
+    /// Subscribe to the project's daemon session list so the sidebar shows
+    /// live threads (and running status) even when no ConversationView is open.
+    pub fn watch_daemon(&mut self, project: Entity<Project>, cx: &mut Context<Self>) {
+        // FORK:daemon-thread-list
+        if !project.read(cx).is_via_remote_server() {
+            return;
+        }
+        let Some(remote) = project.read(cx).remote_client() else {
+            return;
+        };
+        let remote_id = remote.entity_id();
+        if self.daemon_watches.contains_key(&remote_id) {
+            return;
+        }
+        let Ok(connection) = session_client::RemoteAgentConnection::for_project(&project, cx) else {
+            return;
+        };
+        let project_for_fetch = project.clone();
+        let list_task = connection.fetch_session_list(cx);
+        cx.spawn(async move |this, cx| {
+            if let Ok(list) = list_task.await {
+                this.update(cx, |store, cx| {
+                    store.apply_session_list(&project_for_fetch, list, cx);
+                })
+                .ok();
+            }
+        })
+        .detach();
+        let project_for_watch = project.clone();
+        let subscription = connection.watch_session_list(cx, move |store, list, cx| {
+            store.apply_session_list(&project_for_watch, list, cx);
+        });
+        self.daemon_watches.insert(remote_id, subscription);
+    }
+
+    fn apply_session_list(
+        &mut self,
+        project: &Entity<Project>,
+        list: SessionListWire,
+        cx: &mut Context<Self>,
+    ) {
+        let remote_connection = project.read(cx).remote_connection_options(cx);
+        let mut generating = HashSet::default();
+        for session in list.sessions {
+            let session_id = acp::SessionId::new(session.session_id.clone());
+            if session.generating {
+                generating.insert(session_id.clone());
+            }
+            let agent_id = session
+                .agent_id
+                .filter(|id| !id.is_empty())
+                .map(AgentId::new)
+                .unwrap_or_else(|| ZED_AGENT_ID.clone());
+            let folder_paths: Vec<PathBuf> = session.work_dirs.iter().map(PathBuf::from).collect();
+            let worktree_paths = WorktreePaths::from_folder_paths(&PathList::new(&folder_paths));
+            let updated_at = session
+                .updated_at
+                .as_deref()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc))
+                .unwrap_or_else(Utc::now);
+            let title = session.title.map(SharedString::from);
+            if let Some(existing) = self.entry_by_session(&session_id).cloned() {
+                self.save(
+                    ThreadMetadata {
+                        title: title.or(existing.title),
+                        updated_at,
+                        worktree_paths: if folder_paths.is_empty() {
+                            existing.worktree_paths
+                        } else {
+                            worktree_paths
+                        },
+                        remote_connection: remote_connection.clone(),
+                        archived: false,
+                        ..existing
+                    },
+                    cx,
+                );
+            } else {
+                self.save(
+                    ThreadMetadata {
+                        thread_id: ThreadId::new(),
+                        session_id: Some(session_id),
+                        agent_id,
+                        title,
+                        title_override: None,
+                        updated_at,
+                        created_at: Some(updated_at),
+                        interacted_at: None,
+                        worktree_paths,
+                        remote_connection: remote_connection.clone(),
+                        archived: false,
+                    },
+                    cx,
+                );
+            }
+        }
+        if self.generating_sessions != generating {
+            self.generating_sessions = generating;
+            cx.notify();
+        }
+    }
+    // FORK:end
 
     /// Set or clear the user-supplied title for a thread.
     pub fn set_title_override(
@@ -1243,6 +1354,8 @@ impl ThreadMetadataStore {
             threads_by_session: HashMap::default(),
             reload_task: None,
             conversation_subscriptions: HashMap::default(),
+            daemon_watches: HashMap::default(),
+            generating_sessions: HashSet::default(),
             pending_thread_ops_tx: tx,
             in_flight_archives: HashMap::default(),
             _db_operations_task,

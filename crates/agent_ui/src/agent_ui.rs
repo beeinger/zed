@@ -505,6 +505,7 @@ impl Agent {
     }
 }
 
+// FORK:remote-native-agent
 /// GUI-side `AgentServer` for the native Zed Agent when the project is a
 /// daemon facade. `NativeAgent` lives on the server; this only tunnels ACP.
 struct RemoteNativeAgentServer;
@@ -534,6 +535,7 @@ impl agent_servers::AgentServer for RemoteNativeAgentServer {
         self
     }
 }
+// FORK:end
 
 /// Content to initialize new external agent with.
 pub enum AgentInitialContent {
