@@ -739,6 +739,8 @@ fn main() {
         workspace::init(app_state.clone(), cx);
         // FORK:local-transport
         session_transport::init(cx);
+        session_client::init();
+        workspace::register_open_local_via_daemon(zed::open_local_folder_via_daemon);
         // FORK:end
         ui_prompt::init(cx);
 

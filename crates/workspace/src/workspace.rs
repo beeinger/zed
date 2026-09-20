@@ -108,7 +108,7 @@ use project::{
 };
 use release_channel::ReleaseChannel;
 use remote::{
-    RemoteClientDelegate, RemoteConnection, RemoteConnectionOptions,
+    LocalConnectionOptions, RemoteClientDelegate, RemoteConnection, RemoteConnectionOptions,
     remote_client::ConnectionIdentifier,
 };
 use schemars::JsonSchema;
@@ -137,7 +137,7 @@ use std::{
     process::ExitStatus,
     rc::Rc,
     sync::{
-        Arc, LazyLock,
+        Arc, LazyLock, OnceLock,
         atomic::{AtomicBool, AtomicUsize},
     },
     time::Duration,
@@ -10211,19 +10211,46 @@ pub async fn restore_multiworkspace(
         })
         .await
     } else {
-        cx.update(|cx| {
-            Workspace::new_local(
-                active_workspace.paths.paths().to_vec(),
-                app_state.clone(),
-                None,
-                None,
-                None,
-                OpenMode::Add,
-                cx,
+        // FORK:local-daemon-default
+        let daemon_result = if active_workspace.paths.paths().iter().any(|path| path.is_dir())
+            && let Some(open) = OPEN_LOCAL_VIA_DAEMON.get()
+        {
+            Some(
+                cx.update(|cx| {
+                    open(
+                        active_workspace.paths.paths().to_vec(),
+                        app_state.clone(),
+                        OpenOptions {
+                            open_mode: OpenMode::Add,
+                            ..OpenOptions::default()
+                        },
+                        cx,
+                    )
+                })
+                .await
+                .map(|result| result.window),
             )
-        })
-        .await
-        .map(|result| result.window)
+        } else {
+            None
+        };
+        if let Some(result) = daemon_result {
+            result
+        } else {
+            cx.update(|cx| {
+                Workspace::new_local(
+                    active_workspace.paths.paths().to_vec(),
+                    app_state.clone(),
+                    None,
+                    None,
+                    None,
+                    OpenMode::Add,
+                    cx,
+                )
+            })
+            .await
+            .map(|result| result.window)
+        }
+        // FORK:end
     };
 
     let window_handle = match workspace_result {
@@ -10245,6 +10272,21 @@ pub async fn restore_multiworkspace(
                 let paths = key.path_list().paths().to_vec();
                 match cx
                     .update(|cx| {
+                        // FORK:local-daemon-default
+                        if paths.iter().any(|path| path.is_dir())
+                            && let Some(open) = OPEN_LOCAL_VIA_DAEMON.get()
+                        {
+                            return open(
+                                paths,
+                                app_state.clone(),
+                                OpenOptions {
+                                    open_mode: OpenMode::Activate,
+                                    ..OpenOptions::default()
+                                },
+                                cx,
+                            );
+                        }
+                        // FORK:end
                         Workspace::new_local(
                             paths,
                             app_state.clone(),
@@ -10971,6 +11013,44 @@ pub struct OpenResult {
     pub opened_items: Vec<Option<anyhow::Result<Box<dyn ItemHandle>>>>,
 }
 
+/// Production GUI registers this so folder opens use the local unix-socket daemon.
+/// Tests never register it and keep `Project::local`.
+pub type OpenLocalViaDaemon = fn(
+    Vec<PathBuf>,
+    Arc<AppState>,
+    OpenOptions,
+    &mut App,
+) -> Task<anyhow::Result<OpenResult>>;
+
+pub(crate) static OPEN_LOCAL_VIA_DAEMON: OnceLock<OpenLocalViaDaemon> = OnceLock::new();
+
+pub fn register_open_local_via_daemon(open: OpenLocalViaDaemon) {
+    if OPEN_LOCAL_VIA_DAEMON.set(open).is_err() {
+        log::warn!("open_local_via_daemon already registered");
+    }
+}
+
+pub fn open_local_via_daemon_registered() -> bool {
+    OPEN_LOCAL_VIA_DAEMON.get().is_some()
+}
+
+    #[allow(dead_code)]
+    fn try_open_local_via_daemon(
+    abs_paths: Vec<PathBuf>,
+    app_state: Arc<AppState>,
+    open_options: OpenOptions,
+    cx: &mut App,
+) -> Option<Task<anyhow::Result<OpenResult>>> {
+    // FORK:local-daemon-default
+    if !abs_paths.iter().any(|path| path.is_dir()) {
+        return None;
+    }
+    OPEN_LOCAL_VIA_DAEMON
+        .get()
+        .map(|open| open(abs_paths, app_state, open_options, cx))
+    // FORK:end
+}
+
 /// Opens a workspace by its database ID, used for restoring empty workspaces with unsaved content.
 pub fn open_workspace_by_id(
     workspace_id: WorkspaceId,
@@ -11108,6 +11188,26 @@ pub fn open_paths(
         )
         .await;
 
+        // FORK:local-daemon-default
+        if existing.is_none()
+            && OPEN_LOCAL_VIA_DAEMON.get().is_some()
+            && let Some(project_root) = abs_paths.iter().find(|path| path.is_dir()).cloned()
+        {
+            let remote_location = SerializedWorkspaceLocation::Remote(
+                RemoteConnectionOptions::Local(LocalConnectionOptions {
+                    project_root,
+                    nickname: None,
+                }),
+            );
+            let (remote_existing, remote_visible) =
+                find_existing_workspace(&abs_paths, &open_options, &remote_location, cx).await;
+            if remote_existing.is_some() {
+                existing = remote_existing;
+                open_visible = remote_visible;
+            }
+        }
+        // FORK:end
+
         // Fallback: if no workspace contains the paths and all paths are files,
         // prefer an existing local workspace window (active window first).
         if open_options.should_reuse_existing_window() && existing.is_none() {
@@ -11233,8 +11333,21 @@ pub fn open_paths(
             } else {
                 None
             };
-            let result = cx
-                .update(move |cx| {
+            // FORK:local-daemon-default
+            let result = if abs_paths.iter().any(|path| path.is_dir())
+                && let Some(open) = OPEN_LOCAL_VIA_DAEMON.get()
+            {
+                cx.update(|cx| {
+                    open(
+                        abs_paths,
+                        app_state.clone(),
+                        open_options.clone(),
+                        cx,
+                    )
+                })
+                .await
+            } else {
+                cx.update(move |cx| {
                     Workspace::new_local(
                         abs_paths,
                         app_state.clone(),
@@ -11245,7 +11358,9 @@ pub fn open_paths(
                         cx,
                     )
                 })
-                .await;
+                .await
+            };
+            // FORK:end
 
             if let Ok(ref result) = result {
                 result.window

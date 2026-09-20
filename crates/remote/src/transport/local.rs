@@ -55,6 +55,10 @@ fn connector_slot() -> &'static Mutex<Option<LocalRemoteConnectFn>> {
     LOCAL_REMOTE_CONNECT.get_or_init(|| Mutex::new(None))
 }
 
+pub fn local_remote_connector_registered() -> bool {
+    connector_slot().lock().is_some()
+}
+
 /// Called from `session_transport::init`. `remote` must not import overlay.
 pub fn register_local_remote_connect(connect: LocalRemoteConnectFn) {
     *connector_slot().lock() = Some(connect);

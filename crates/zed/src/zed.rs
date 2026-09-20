@@ -70,6 +70,7 @@ use recent_projects::open_remote_project;
 use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
 use rope::Rope;
 use search::project_search::ProjectSearchBar;
+use session_transport;
 use settings::{
     BaseKeymap, DEFAULT_KEYMAP_PATH, DefaultOpenBehavior, DetachedPermissionsContent,
     InvalidSettingsError, KeybindSource, KeymapFile, KeymapFileLoadResult, MigrationStatus,
@@ -99,8 +100,8 @@ use vim_mode_setting::VimModeSetting;
 use workspace::notifications::{NotificationId, dismiss_app_notification, show_app_notification};
 
 use workspace::{
-    AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Panel, Toast, Workspace,
-    WorkspaceSettings, create_and_open_local_file,
+    AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, OpenOptions, OpenResult, Panel, Toast,
+    Workspace, WorkspaceSettings, create_and_open_local_file,
     notifications::simple_message_notification::MessageNotification, open_new,
 };
 use workspace::{CloseProject, CloseWindow, RestoreBanner, with_active_or_new_workspace};
@@ -446,6 +447,41 @@ fn should_advise_detached_work(cx: &App) -> bool {
         return false;
     }
     true
+}
+// FORK:end
+
+// FORK:local-daemon-default
+/// Production folder open: unix-socket daemon instead of in-process `Project::local`.
+pub fn open_local_folder_via_daemon(
+    abs_paths: Vec<PathBuf>,
+    app_state: Arc<AppState>,
+    open_options: OpenOptions,
+    cx: &mut App,
+) -> Task<anyhow::Result<OpenResult>> {
+    cx.spawn(async move |cx| {
+        let project_root = abs_paths
+            .iter()
+            .find(|path| path.is_dir())
+            .cloned()
+            .or_else(|| abs_paths.first().cloned())
+            .context("no path to open via local daemon")?;
+        let window = open_remote_project(
+            session_transport::local_daemon_connection_options(project_root, None),
+            abs_paths,
+            app_state,
+            open_options,
+            cx,
+        )
+        .await?;
+        let workspace = window.update(cx, |multi_workspace, _, _| {
+            multi_workspace.workspace().clone()
+        })?;
+        Ok(OpenResult {
+            window,
+            workspace,
+            opened_items: Vec::new(),
+        })
+    })
 }
 // FORK:end
 

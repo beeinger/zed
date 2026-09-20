@@ -27,8 +27,8 @@ const SIDEBAR_RESIZE_HANDLE_SIZE: Pixels = px(6.0);
 
 use crate::open_remote_project_with_existing_connection;
 use crate::{
-    CloseIntent, CloseWindow, DockPosition, Event as WorkspaceEvent, Item, ModalView, OpenMode,
-    Panel, Workspace, WorkspaceId, client_side_decorations,
+    CloseIntent, CloseWindow, DockPosition, Event as WorkspaceEvent, Item, ModalView, OPEN_LOCAL_VIA_DAEMON,
+    OpenMode, OpenOptions, Panel, Workspace, WorkspaceId, client_side_decorations,
     persistence::model::MultiWorkspaceState,
 };
 
@@ -1263,8 +1263,26 @@ impl MultiWorkspace {
                 return Ok(workspace);
             }
 
-            let result = cx
-                .update(|cx| {
+            let result = if effective_path_list.paths().iter().any(|path| path.is_dir())
+                && let Some(open) = OPEN_LOCAL_VIA_DAEMON.get()
+            {
+                // FORK:local-daemon-default
+                cx.update(|cx| {
+                    open(
+                        effective_path_list.paths().to_vec(),
+                        app_state,
+                        OpenOptions {
+                            requesting_window,
+                            open_mode,
+                            ..OpenOptions::default()
+                        },
+                        cx,
+                    )
+                })
+                .await?
+                // FORK:end
+            } else {
+                cx.update(|cx| {
                     Workspace::new_local(
                         effective_path_list.paths().to_vec(),
                         app_state,
@@ -1275,7 +1293,8 @@ impl MultiWorkspace {
                         cx,
                     )
                 })
-                .await?;
+                .await?
+            };
             Ok(result.workspace)
         })
     }

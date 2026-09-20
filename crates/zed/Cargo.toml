@@ -194,6 +194,7 @@ serde_json.workspace = true
 session.workspace = true
 # FORK:local-transport
 session_transport.workspace = true
+session_client.workspace = true
 # FORK:end
 # FORK:detached-prompt-advice
 session_protocol.workspace = true
