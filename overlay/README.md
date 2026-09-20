@@ -26,8 +26,9 @@ The mission:
   `RemoteAgentConnection`. The GUI never constructs in-process `NativeAgent`
   for those projects.
 - Production local open uses the unix-socket daemon for folders **and**
-  file-only opens (parent directory is the daemon id). Tests keep
-  `Project::local`.
+  file-only opens (parent directory is the daemon id). Empty windows and
+  unsaved restore share `EMPTY_LOCAL_DAEMON_ROOT` so they reconnect to one
+  host instead of `Project::local`. Tests keep `Project::local`.
 - Several GUIs can attach to one daemon at once (Envelope ids remapped).
   SSH/`run` is `setsid` + SIGHUP ignored so dropping the proxy does not
   kill the host. `serve` + systemd/launchd remains the service entry.
@@ -36,6 +37,9 @@ The mission:
   Switching workspace does not cancel daemon turns.
 - Dirty buffers stay on the daemon after the GUI closes its replica, and are
   snapshotted under the server state dir.
+- The daemon event log is snapshotted to jsonl so a process bounce can still
+  catch a reconnecting GUI up (GUI close itself does not need disk: the live
+  daemon already keeps the RAM log).
 - The remote Envelope stream is zstd-compressed (legacy uncompressed frames
   still decode). Agent token deltas coalesce (~50ms / 64 chars). Heartbeats
   adapt to RTT and honor `SessionHeartbeat` tunables.

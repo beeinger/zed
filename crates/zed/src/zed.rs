@@ -459,9 +459,7 @@ pub fn open_local_folder_via_daemon(
     cx: &mut App,
 ) -> Task<anyhow::Result<OpenResult>> {
     cx.spawn(async move |cx| {
-        let project_root = workspace::local_daemon_project_root(&abs_paths)
-            .or_else(|| abs_paths.first().cloned())
-            .context("no path to open via local daemon")?;
+        let project_root = workspace::local_daemon_identity_root(&abs_paths);
         let window = open_remote_project(
             session_transport::local_daemon_connection_options(project_root, None),
             abs_paths,

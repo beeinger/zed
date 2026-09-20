@@ -8,7 +8,7 @@ use gpui::{
 };
 pub use project::ProjectGroupKey;
 use project::{DisableAiSettings, Project};
-use remote::RemoteConnectionOptions;
+use remote::{LocalConnectionOptions, RemoteConnectionOptions};
 use settings::Settings;
 pub use settings::SidebarSide;
 use std::cell::Cell;
@@ -27,9 +27,9 @@ const SIDEBAR_RESIZE_HANDLE_SIZE: Pixels = px(6.0);
 
 use crate::open_remote_project_with_existing_connection;
 use crate::{
-    CloseIntent, CloseWindow, DockPosition, Event as WorkspaceEvent, Item, ModalView, OPEN_LOCAL_VIA_DAEMON,
-    OpenMode, OpenOptions, Panel, Workspace, WorkspaceId, client_side_decorations,
-    persistence::model::MultiWorkspaceState,
+    CloseIntent, CloseWindow, DockPosition, Event as WorkspaceEvent, Item, ModalView,
+    OPEN_LOCAL_VIA_DAEMON, OpenMode, OpenOptions, Panel, Workspace, WorkspaceId,
+    client_side_decorations, persistence::model::MultiWorkspaceState,
 };
 
 actions!(
@@ -1877,6 +1877,17 @@ impl MultiWorkspace {
                                     key.host().is_none() && !key.path_list().is_empty()
                                 });
                             }
+                            // FORK:local-daemon-default — replace the in-process stub with the empty daemon.
+                            if reopen_key.is_none() && OPEN_LOCAL_VIA_DAEMON.get().is_some() {
+                                reopen_key = Some(ProjectGroupKey::new(
+                                    Some(RemoteConnectionOptions::Local(LocalConnectionOptions {
+                                        project_root: PathBuf::from(crate::EMPTY_LOCAL_DAEMON_ROOT),
+                                        nickname: None,
+                                    })),
+                                    PathList::default(),
+                                ));
+                            }
+                            // FORK:end
                             let app_state = displayed_workspace.read(cx).app_state().clone();
                             let project = Project::local(
                                 app_state.client.clone(),

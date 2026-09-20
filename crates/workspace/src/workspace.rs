@@ -893,11 +893,7 @@ fn prompt_and_open_paths(
     create_new_window: bool,
     cx: &mut App,
 ) {
-    if let Some(workspace_window) =
-        workspace_windows_for_location(&SerializedWorkspaceLocation::Local, cx)
-            .into_iter()
-            .next()
-    {
+    if let Some(workspace_window) = workspace_windows_on_this_machine(cx).into_iter().next() {
         workspace_window
             .update(cx, |multi_workspace, window, cx| {
                 let workspace = multi_workspace.workspace().clone();
@@ -2168,6 +2164,32 @@ impl Workspace {
         open_mode: OpenMode,
         cx: &mut App,
     ) -> Task<anyhow::Result<OpenResult>> {
+        // FORK:local-daemon-default — production never constructs in-process Project::local.
+        if let Some(open) = OPEN_LOCAL_VIA_DAEMON.get() {
+            let daemon_open = open(
+                abs_paths,
+                app_state,
+                OpenOptions {
+                    requesting_window,
+                    env,
+                    open_mode,
+                    ..OpenOptions::default()
+                },
+                cx,
+            );
+            return cx.spawn(async move |cx| {
+                let result = daemon_open.await?;
+                if let Some(init) = init {
+                    result.window.update(cx, |_, window, cx| {
+                        result.workspace.update(cx, |workspace, cx| {
+                            init(workspace, window, cx);
+                        });
+                    })?;
+                }
+                Ok(result)
+            });
+        }
+        // FORK:end
         let project_handle = Project::local(
             app_state.client.clone(),
             app_state.node_runtime.clone(),
@@ -3489,7 +3511,7 @@ impl Workspace {
         T: 'static,
         F: 'static + FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> T,
     {
-        if self.project.read(cx).is_local() {
+        if project_is_on_this_machine(&self.project, cx) {
             Task::ready(Ok(callback(self, window, cx)))
         } else {
             let env = self.project.read(cx).cli_environment(cx);
@@ -3529,8 +3551,9 @@ impl Workspace {
         T: 'static,
         F: 'static + FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> T,
     {
-        let project = self.project.read(cx);
-        if project.is_local() || project.is_via_wsl_with_host_interop(cx) {
+        if project_is_on_this_machine(&self.project, cx)
+            || self.project.read(cx).is_via_wsl_with_host_interop(cx)
+        {
             Task::ready(Ok(callback(self, window, cx)))
         } else {
             let env = self.project.read(cx).cli_environment(cx);
@@ -7506,7 +7529,6 @@ impl Workspace {
         self.database_id
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn set_database_id(&mut self, id: WorkspaceId) {
         self.database_id = Some(id);
     }
@@ -11011,12 +11033,8 @@ pub struct OpenResult {
 
 /// Production GUI registers this so folder opens use the local unix-socket daemon.
 /// Tests never register it and keep `Project::local`.
-pub type OpenLocalViaDaemon = fn(
-    Vec<PathBuf>,
-    Arc<AppState>,
-    OpenOptions,
-    &mut App,
-) -> Task<anyhow::Result<OpenResult>>;
+pub type OpenLocalViaDaemon =
+    fn(Vec<PathBuf>, Arc<AppState>, OpenOptions, &mut App) -> Task<anyhow::Result<OpenResult>>;
 
 pub(crate) static OPEN_LOCAL_VIA_DAEMON: OnceLock<OpenLocalViaDaemon> = OnceLock::new();
 
@@ -11047,6 +11065,61 @@ pub fn local_daemon_project_root(abs_paths: &[PathBuf]) -> Option<PathBuf> {
         })
 }
 
+/// Socket identity for a production local daemon, including empty windows.
+///
+/// Empty workspaces share one host (`EMPTY_LOCAL_DAEMON_ROOT`) so New Window
+/// and unsaved restore reconnect instead of spawning an in-process agent.
+pub const EMPTY_LOCAL_DAEMON_ROOT: &str = "__zed_empty_workspace__";
+
+pub fn local_daemon_identity_root(abs_paths: &[PathBuf]) -> PathBuf {
+    local_daemon_project_root(abs_paths).unwrap_or_else(|| PathBuf::from(EMPTY_LOCAL_DAEMON_ROOT))
+}
+
+pub fn local_daemon_workspace_location(abs_paths: &[PathBuf]) -> SerializedWorkspaceLocation {
+    SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Local(LocalConnectionOptions {
+        project_root: local_daemon_identity_root(abs_paths),
+        nickname: None,
+    }))
+}
+
+fn project_is_on_this_machine(project: &Entity<Project>, cx: &App) -> bool {
+    let project = project.read(cx);
+    project.is_local()
+        || matches!(
+            project.remote_connection_options(cx),
+            Some(RemoteConnectionOptions::Local(_))
+        )
+}
+
+fn workspace_windows_on_this_machine(cx: &App) -> Vec<WindowHandle<MultiWorkspace>> {
+    let mut windows = workspace_windows_for_location(&SerializedWorkspaceLocation::Local, cx);
+    if OPEN_LOCAL_VIA_DAEMON.get().is_none() {
+        return windows;
+    }
+    for window in cx
+        .windows()
+        .into_iter()
+        .filter_map(|window| window.downcast::<MultiWorkspace>())
+    {
+        let is_local_daemon = window.read(cx).is_ok_and(|multi_workspace| {
+            multi_workspace.workspaces().any(|workspace| {
+                matches!(
+                    workspace
+                        .read(cx)
+                        .project()
+                        .read(cx)
+                        .remote_connection_options(cx),
+                    Some(RemoteConnectionOptions::Local(_))
+                )
+            })
+        });
+        if is_local_daemon && !windows.iter().any(|existing| existing == &window) {
+            windows.push(window);
+        }
+    }
+    windows
+}
+
 fn try_open_local_via_daemon(
     abs_paths: Vec<PathBuf>,
     app_state: Arc<AppState>,
@@ -11067,6 +11140,45 @@ pub fn open_workspace_by_id(
     requesting_window: Option<WindowHandle<MultiWorkspace>>,
     cx: &mut App,
 ) -> Task<anyhow::Result<WindowHandle<MultiWorkspace>>> {
+    // FORK:local-daemon-default — empty restore is still a window onto a daemon.
+    if let Some(open) = OPEN_LOCAL_VIA_DAEMON.get() {
+        let open_options = OpenOptions {
+            requesting_window,
+            open_mode: if requesting_window.is_some() {
+                OpenMode::Add
+            } else {
+                OpenMode::Activate
+            },
+            ..OpenOptions::default()
+        };
+        let daemon_open = open(Vec::new(), app_state.clone(), open_options, cx);
+        let db = WorkspaceDb::global(cx);
+        return cx.spawn(async move |cx| {
+            let OpenResult {
+                window, workspace, ..
+            } = daemon_open.await?;
+            let serialized_workspace = db
+                .workspace_for_id(workspace_id)
+                .with_context(|| format!("Workspace {workspace_id:?} not found"))?;
+            window
+                .update(cx, |_, window, cx| {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.set_database_id(workspace_id);
+                        workspace.centered_layout = serialized_workspace.centered_layout;
+                        open_items(Some(serialized_workspace), Vec::new(), window, cx)
+                    })
+                })?
+                .await?;
+            window.update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.serialize_workspace(window, cx);
+                });
+            })?;
+            Ok(window)
+        });
+    }
+    // FORK:end
+
     let project_handle = Project::local(
         app_state.client.clone(),
         app_state.node_runtime.clone(),
@@ -11198,16 +11310,8 @@ pub fn open_paths(
         .await;
 
         // FORK:local-daemon-default
-        if existing.is_none()
-            && OPEN_LOCAL_VIA_DAEMON.get().is_some()
-            && let Some(project_root) = local_daemon_project_root(&abs_paths)
-        {
-            let remote_location = SerializedWorkspaceLocation::Remote(
-                RemoteConnectionOptions::Local(LocalConnectionOptions {
-                    project_root,
-                    nickname: None,
-                }),
-            );
+        if existing.is_none() && OPEN_LOCAL_VIA_DAEMON.get().is_some() {
+            let remote_location = local_daemon_workspace_location(&abs_paths);
             let (remote_existing, remote_visible) =
                 find_existing_workspace(&abs_paths, &open_options, &remote_location, cx).await;
             if remote_existing.is_some() {
@@ -11228,10 +11332,7 @@ pub fn open_paths(
 
             if all_metadatas.into_iter().all(|file| !file.is_dir) {
                 cx.update(|cx| {
-                    let windows = workspace_windows_for_location(
-                        &SerializedWorkspaceLocation::Local,
-                        cx,
-                    );
+                    let windows = workspace_windows_on_this_machine(cx);
                     let window = cx
                         .active_window()
                         .and_then(|window| window.downcast::<MultiWorkspace>())
@@ -11263,10 +11364,7 @@ pub fn open_paths(
 
             if use_existing_window {
                 let target_window = cx.update(|cx| {
-                    let windows = workspace_windows_for_location(
-                        &SerializedWorkspaceLocation::Local,
-                        cx,
-                    );
+                    let windows = workspace_windows_on_this_machine(cx);
                     let window = cx
                         .active_window()
                         .and_then(|window| window.downcast::<MultiWorkspace>())
@@ -12559,6 +12657,19 @@ mod tests {
     use settings::SettingsStore;
     use util::path;
     use util::rel_path::rel_path;
+
+    #[test]
+    fn empty_local_daemon_identity_is_shared_sentinel() {
+        assert_eq!(
+            crate::local_daemon_identity_root(&[]),
+            std::path::PathBuf::from(crate::EMPTY_LOCAL_DAEMON_ROOT)
+        );
+        let file = std::path::PathBuf::from("/definitely-not-a-zed-daemon-test/foo.rs");
+        assert_eq!(
+            crate::local_daemon_identity_root(std::slice::from_ref(&file)),
+            std::path::PathBuf::from("/definitely-not-a-zed-daemon-test")
+        );
+    }
 
     #[test]
     fn test_render_window_title_format_omits_empty_segments() {
