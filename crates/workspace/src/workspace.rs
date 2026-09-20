@@ -4038,6 +4038,26 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Vec<Option<anyhow::Result<Box<dyn ItemHandle>>>>> {
+        // FORK:local-daemon-default — a folder opened in the empty window is a different host.
+        if OPEN_LOCAL_VIA_DAEMON.get().is_some()
+            && is_empty_local_daemon_project(&self.project, cx)
+            && abs_paths.iter().any(|path| path.is_dir())
+        {
+            let paths = abs_paths.clone();
+            return cx.spawn_in(window, async move |this, cx| {
+                let count = paths.len();
+                if let Some(task) = this
+                    .update_in(cx, |this, window, cx| {
+                        this.open_workspace_for_paths(OpenMode::Activate, paths, window, cx)
+                    })
+                    .ok()
+                {
+                    task.await.log_err();
+                }
+                (0..count).map(|_| None).collect()
+            });
+        }
+        // FORK:end
         let fs = self.app_state.fs.clone();
 
         let caller_ordered_abs_paths = abs_paths.clone();
@@ -11091,6 +11111,14 @@ fn project_is_on_this_machine(project: &Entity<Project>, cx: &App) -> bool {
         )
 }
 
+fn is_empty_local_daemon_project(project: &Entity<Project>, cx: &App) -> bool {
+    matches!(
+        project.read(cx).remote_connection_options(cx),
+        Some(RemoteConnectionOptions::Local(options))
+            if options.project_root == Path::new(EMPTY_LOCAL_DAEMON_ROOT)
+    )
+}
+
 fn workspace_windows_on_this_machine(cx: &App) -> Vec<WindowHandle<MultiWorkspace>> {
     let mut windows = workspace_windows_for_location(&SerializedWorkspaceLocation::Local, cx);
     if OPEN_LOCAL_VIA_DAEMON.get().is_none() {
@@ -12668,6 +12696,10 @@ mod tests {
         assert_eq!(
             crate::local_daemon_identity_root(std::slice::from_ref(&file)),
             std::path::PathBuf::from("/definitely-not-a-zed-daemon-test")
+        );
+        assert_eq!(
+            std::path::Path::new(crate::EMPTY_LOCAL_DAEMON_ROOT),
+            std::path::Path::new("__zed_empty_workspace__")
         );
     }
 

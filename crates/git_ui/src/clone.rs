@@ -1,9 +1,10 @@
 use gpui::{App, Context, WeakEntity, Window};
 use notifications::status_toast::StatusToast;
+use std::path::PathBuf;
 use std::sync::Arc;
 use ui::{Color, Icon, IconName, IconSize, SharedString};
 use util::ResultExt;
-use workspace::{self, Workspace};
+use workspace::{self, OpenMode, OpenOptions, OpenVisible, Workspace};
 
 pub fn clone_and_open(
     repo_url: SharedString,
@@ -88,7 +89,7 @@ pub fn clone_and_open(
             destination_dir.push(&repo_name);
 
             match prompt_answer {
-                0 => {
+                0 if has_worktrees => {
                     workspace
                         .update_in(cx, |workspace, window, cx| {
                             let create_task = workspace.project().update(cx, |project, cx| {
@@ -110,43 +111,43 @@ pub fn clone_and_open(
                         })
                         .ok()?;
                 }
+                0 => {
+                    // FORK:local-daemon-default — empty windows share a sentinel host; open the clone as its own daemon.
+                    workspace
+                        .update_in(cx, |workspace, window, cx| {
+                            let app_state = workspace.app_state().clone();
+                            let requesting_window = window.window_handle().downcast();
+                            open_cloned_destination(
+                                destination_dir.clone(),
+                                app_state,
+                                OpenOptions {
+                                    requesting_window,
+                                    open_mode: OpenMode::Activate,
+                                    visible: Some(OpenVisible::All),
+                                    ..Default::default()
+                                },
+                                on_success.clone(),
+                                cx,
+                            );
+                        })
+                        .ok()?;
+                }
                 1 => {
+                    // FORK:local-daemon-default — new-window clone is another daemon, not Project::local.
                     workspace
                         .update(cx, move |workspace, cx| {
                             let app_state = workspace.app_state().clone();
-                            let destination_path = destination_dir.clone();
-                            let on_success = on_success.clone();
-
-                            workspace::open_new(
-                                Default::default(),
+                            open_cloned_destination(
+                                destination_dir.clone(),
                                 app_state,
-                                cx,
-                                move |workspace, window, cx| {
-                                    cx.activate(true);
-
-                                    let create_task =
-                                        workspace.project().update(cx, |project, cx| {
-                                            project.create_worktree(
-                                                destination_path.as_path(),
-                                                true,
-                                                cx,
-                                            )
-                                        });
-
-                                    let workspace_weak = cx.weak_entity();
-                                    cx.spawn_in(window, async move |_window, cx| {
-                                        if create_task.await.log_err().is_some() {
-                                            workspace_weak
-                                                .update_in(cx, |workspace, window, cx| {
-                                                    (on_success)(workspace, window, cx);
-                                                })
-                                                .ok();
-                                        }
-                                    })
-                                    .detach();
+                                OpenOptions {
+                                    open_mode: OpenMode::NewWindow,
+                                    visible: Some(OpenVisible::All),
+                                    ..Default::default()
                                 },
-                            )
-                            .detach();
+                                on_success.clone(),
+                                cx,
+                            );
                         })
                         .ok();
                 }
@@ -156,4 +157,34 @@ pub fn clone_and_open(
             Some(())
         })
         .detach();
+}
+
+fn open_cloned_destination(
+    destination_path: PathBuf,
+    app_state: Arc<workspace::AppState>,
+    open_options: OpenOptions,
+    on_success: Arc<
+        dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + Send + Sync + 'static,
+    >,
+    cx: &mut App,
+) {
+    let task = workspace::open_paths(
+        std::slice::from_ref(&destination_path),
+        app_state,
+        open_options,
+        cx,
+    );
+    cx.spawn(async move |cx| {
+        let result = task.await.log_err()?;
+        result
+            .window
+            .update(cx, |_, window, cx| {
+                result.workspace.update(cx, |workspace, cx| {
+                    (on_success)(workspace, window, cx);
+                })
+            })
+            .ok();
+        Some(())
+    })
+    .detach();
 }
