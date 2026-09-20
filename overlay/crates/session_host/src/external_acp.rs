@@ -79,7 +79,6 @@ impl DetachedAcpIo for HostExternalIo {
         cx: &mut App,
     ) -> Task<Result<acp::RequestPermissionResponse>> {
         let host = self.host.clone();
-        let agent_id = self.agent_id.clone();
         let session_id = request.session_id.clone();
         let options = PermissionOptions::Flat(request.options.clone());
         let kind = acp_thread::AuthorizationKind::PermissionGrant;
@@ -104,14 +103,15 @@ impl DetachedAcpIo for HostExternalIo {
                     acp::RequestPermissionOutcome::Selected(outcome.into()),
                 )),
                 DaemonPromptWait::TimedOut => {
-                    let _ = host.update(cx, |host, cx| {
-                        if let Some(agent) = host.external_agents.get(agent_id.as_ref()) {
-                            agent.connection.cancel(&session_id, cx);
-                        }
-                    });
-                    Ok(acp::RequestPermissionResponse::new(
-                        acp::RequestPermissionOutcome::Cancelled,
-                    ))
+                    if let Some(outcome) = reject_once_permission_outcome(&options) {
+                        Ok(acp::RequestPermissionResponse::new(
+                            acp::RequestPermissionOutcome::Selected(outcome.into()),
+                        ))
+                    } else {
+                        Ok(acp::RequestPermissionResponse::new(
+                            acp::RequestPermissionOutcome::Cancelled,
+                        ))
+                    }
                 }
             }
         })
@@ -313,30 +313,22 @@ impl SessionHost {
                     .map(|value| (key, value))
             })
             .collect();
+        if !request.path.is_empty() || !request.args.is_empty() {
+            log::debug!(
+                "zed/acp_connect ignoring GUI command {:?} {:?}; host AgentServerStore is the source",
+                request.path,
+                request.args
+            );
+        }
         let extra_env: HashMap<String, String> = request.env.into_iter().collect();
-        let command = match resolve_host_command(
-            agent_server_store.clone(),
-            &agent_id,
-            extra_env.clone(),
-            cx,
-        )
-        .await
-        {
-            Ok(mut command) => {
-                if let Some(env) = command.env.as_mut() {
-                    env.extend(extra_env);
-                } else if !extra_env.is_empty() {
-                    command.env = Some(extra_env);
-                }
-                command
-            }
-            Err(error) if request.path.is_empty() => return Err(error),
-            Err(_) => AgentServerCommand {
-                path: request.path.into(),
-                args: request.args,
-                env: Some(extra_env),
-            },
-        };
+        let mut command =
+            resolve_host_command(agent_server_store.clone(), &agent_id, extra_env.clone(), cx)
+                .await?;
+        if let Some(env) = command.env.as_mut() {
+            env.extend(extra_env);
+        } else if !extra_env.is_empty() {
+            command.env = Some(extra_env);
+        }
         let io: Rc<dyn DetachedAcpIo> = Rc::new(HostExternalIo {
             host: this.downgrade(),
             agent_id: AgentId::new(agent_id.clone()),
@@ -530,6 +522,16 @@ async fn resolve_host_command(
         Ok(agent.get_command(Vec::new(), extra_env, &mut cx.to_async()))
     })?;
     command_task.await
+}
+
+fn reject_once_permission_outcome(
+    options: &PermissionOptions,
+) -> Option<acp_thread::SelectedPermissionOutcome> {
+    let option = options.first_option_of_kind(acp::PermissionOptionKind::RejectOnce)?;
+    Some(acp_thread::SelectedPermissionOutcome::new(
+        option.option_id.clone(),
+        option.kind,
+    ))
 }
 
 fn permit_everything_permission_outcome(

@@ -614,8 +614,9 @@ impl MentionSet {
             return Task::ready(Err(anyhow!("project not found")));
         };
 
-        // FORK:remote-native-agent — never construct GUI NativeAgent on a daemon project.
-        if project.read(cx).is_via_remote_server() {
+        // FORK:remote-native-agent — never construct GUI NativeAgent when a daemon exists.
+        if project.read(cx).is_via_remote_server() || workspace::open_local_via_daemon_registered()
+        {
             return match session_client::RemoteAgentConnection::for_project(&project, cx) {
                 Ok(connection) => {
                     let task = connection.thread_summary(id, cx);

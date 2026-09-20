@@ -378,7 +378,11 @@ impl SessionHost {
             })
             .context("session delete unavailable")?;
         task.await.context("delete native agent session")?;
-        this.update(cx, |host, cx| host.notify_session_list_changed(cx));
+        this.update(cx, |host, cx| {
+            host.daemon_threads.remove(&session_id);
+            host.generating_sessions.remove(&session_id.to_string());
+            host.notify_session_list_changed(cx);
+        });
         Ok(())
     }
 
@@ -391,7 +395,11 @@ impl SessionHost {
             })
             .context("session delete-all unavailable")?;
         task.await.context("delete native agent sessions")?;
-        this.update(cx, |host, cx| host.notify_session_list_changed(cx));
+        this.update(cx, |host, cx| {
+            host.daemon_threads.clear();
+            host.generating_sessions.clear();
+            host.notify_session_list_changed(cx);
+        });
         Ok(())
     }
 

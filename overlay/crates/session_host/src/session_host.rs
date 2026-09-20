@@ -447,6 +447,7 @@ impl SessionHost {
             host.refresh_prompt_policy(cx);
             host.notify_gui_attached();
             let catch_up = host.log.catch_up(last_seq);
+            host.notify_session_list_changed(cx);
             proto::SessionCatchUp {
                 from_seq: catch_up.from_seq.0,
                 to_seq: catch_up.to_seq.0,

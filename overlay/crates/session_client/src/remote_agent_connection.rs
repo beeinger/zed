@@ -16,10 +16,11 @@ use agent_client_protocol::schema::v1 as acp;
 use anyhow::{Context as _, Result, anyhow};
 use collections::{HashMap, IndexMap};
 use gpui::{
-    App, AppContext as _, AsyncApp, Entity, EntityId, EventEmitter, Global, SharedString, Task,
-    TaskExt as _, WeakEntity,
+    App, AppContext as _, AsyncApp, Context, Entity, EntityId, EventEmitter, Global, SharedString,
+    Subscription, Task, TaskExt as _, WeakEntity,
 };
 use project::{AgentId, Project, agent_server_store::AgentServerCommand};
+use remote::{RemoteClient, RemoteClientEvent};
 use rpc::{AnyProtoClient, TypedEnvelope, proto};
 use session_protocol::{
     AUTHORIZATION_KIND_META, AcpConnectRequest, AcpConnectResponse, CatchUpResponse,
@@ -60,6 +61,7 @@ struct RemoteAgentSession {
     last_seq_by_session: HashMap<acp::SessionId, u64>,
     global_last_seq: u64,
     request_elicitations: Entity<ElicitationStore>,
+    _remote_events: Option<Subscription>,
 }
 
 /// Daemon sent `zed/session_list_changed` (full list).
@@ -68,18 +70,17 @@ pub struct SessionListUpdated(pub SessionListWire);
 
 impl EventEmitter<SessionListUpdated> for RemoteAgentSession {}
 
-fn session_for_remote(
-    remote_client_id: EntityId,
-    proto: AnyProtoClient,
-    cx: &mut App,
-) -> Entity<RemoteAgentSession> {
+fn session_for_remote(remote: Entity<RemoteClient>, cx: &mut App) -> Entity<RemoteAgentSession> {
+    let remote_client_id = remote.entity_id();
     if let Some(existing) = cx
         .try_global::<RemoteAgentHub>()
         .and_then(|hub| hub.by_remote_client.get(&remote_client_id).cloned())
     {
         return existing;
     }
+    let proto = remote.read(cx).proto_client();
     let session = new_remote_session(proto, cx);
+    session.update(cx, |this, cx| this.bind_transport(remote, cx));
     cx.default_global::<RemoteAgentHub>()
         .by_remote_client
         .insert(remote_client_id, session.clone());
@@ -95,6 +96,7 @@ fn new_remote_session(proto: AnyProtoClient, cx: &mut App) -> Entity<RemoteAgent
         last_seq_by_session: HashMap::default(),
         global_last_seq: 0,
         request_elicitations,
+        _remote_events: None,
     });
     proto.add_request_handler(session.downgrade(), RemoteAgentSession::handle_inbound);
     session
@@ -178,9 +180,7 @@ impl RemoteAgentConnection {
             .read(cx)
             .remote_client()
             .context("project is not via remote server")?;
-        let remote_id = remote.entity_id();
-        let proto = remote.read(cx).proto_client();
-        let session = session_for_remote(remote_id, proto, cx);
+        let session = session_for_remote(remote, cx);
         flush_credentials_to_hub(cx);
         Ok(Rc::new(Self::native(session, cx)))
     }
@@ -218,9 +218,7 @@ impl RemoteAgentConnection {
             .read(cx)
             .remote_client()
             .context("project is not via remote server")?;
-        let remote_id = remote.entity_id();
-        let proto = remote.read(cx).proto_client();
-        let session = session_for_remote(remote_id, proto, cx);
+        let session = session_for_remote(remote, cx);
         let request_elicitations = session.read(cx).request_elicitations.clone();
         let connection = Self {
             session,
@@ -307,6 +305,41 @@ impl RemoteAgentConnection {
 }
 
 impl RemoteAgentSession {
+    fn bind_transport(&mut self, remote: Entity<RemoteClient>, cx: &mut Context<Self>) {
+        self._remote_events = Some(cx.subscribe(&remote, |this, _remote, event, cx| {
+            if matches!(event, RemoteClientEvent::Reconnected) {
+                this.catch_up_after_reconnect(cx);
+            }
+        }));
+    }
+
+    fn catch_up_after_reconnect(&mut self, cx: &mut Context<Self>) {
+        let last_seq = self.global_last_seq;
+        let proto = self.proto.clone();
+        cx.spawn(async move |this, cx| {
+            let catch_up = proto
+                .request(proto::SessionSubscribe { last_seq })
+                .await
+                .context("SessionSubscribe after reconnect")?;
+            this.update(cx, |this, cx| {
+                this.global_last_seq = this.global_last_seq.max(catch_up.to_seq);
+                let catch_up = catch_up_from_proto(&catch_up);
+                let threads: Vec<_> = this
+                    .sessions
+                    .values()
+                    .filter_map(|thread| thread.upgrade())
+                    .collect();
+                for thread in threads {
+                    if let Err(error) = apply_catch_up(&thread, &catch_up, cx) {
+                        log::debug!("reconnect catch-up: {error:#}");
+                    }
+                }
+            })?;
+            anyhow::Ok(())
+        })
+        .detach();
+    }
+
     async fn handle_inbound(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::SessionAgentRpc>,
@@ -782,9 +815,7 @@ pub async fn connect_external_agent(
             .read(cx)
             .remote_client()
             .context("project is not via remote server")?;
-        let remote_id = remote.entity_id();
-        let proto = remote.read(cx).proto_client();
-        let session = session_for_remote(remote_id, proto, cx);
+        let session = session_for_remote(remote, cx);
         let request_elicitations = session.read(cx).request_elicitations.clone();
         Ok(RemoteAgentConnection {
             session,
@@ -798,8 +829,8 @@ pub async fn connect_external_agent(
         })
     })?;
     let request = AcpConnectRequest {
-        path: command.path.display().to_string(),
-        args: command.args,
+        path: String::new(),
+        args: Vec::new(),
         env: command.env.unwrap_or_default().into_iter().collect(),
         default_mode: default_mode.map(|mode| mode.to_string()),
         default_config_options,

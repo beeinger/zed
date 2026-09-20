@@ -16,9 +16,10 @@ The mission:
 - Upstream merges stay mechanical: overlay crates plus tiny `FORK:` hooks.
 - Permission and elicitation prompts are asked of the GUI. A missing window
   waits forever (default) or until `agent.disconnected_prompt_wait` times out:
-  permission timeout cancels the turn; elicitation timeout continues without
-  the form. Unattended remote work should set `agent.detached_permissions` to
-  `"permit_everything"` or a thorough `agent.tool_permissions` allow-list.
+  permission timeout denies that tool once (it does **not** `session/cancel`);
+  elicitation timeout continues without the form. Unattended remote work should
+  set `agent.detached_permissions` to `"permit_everything"` or a thorough
+  `agent.tool_permissions` allow-list.
 - External ACP children (Gemini, Claude, …) are spawned on the daemon. The GUI
   only tunnels ACP. Closing the window does not SIGHUP the child; reconnect
   uses `session/load` or `session/resume`.
@@ -28,7 +29,17 @@ The mission:
 - Production local open uses the unix-socket daemon for folders **and**
   file-only opens (parent directory is the daemon id). Empty windows and
   unsaved restore share `EMPTY_LOCAL_DAEMON_ROOT` so they reconnect to one
-  host instead of `Project::local`. Tests keep `Project::local`.
+  host instead of `Project::local`. Opening a folder from that empty window
+  (or cloning a repo into it) connects to **that folder's** daemon rather
+  than adding a worktree to the empty host. Tests keep `Project::local`.
+- The production GUI never constructs `NativeAgent` or stdio-spawns ACP
+  (`session_client::init` marks the process as a window). Tests and
+  `remote_server` still own those objects.
+- External ACP spawn is resolved on the host `AgentServerStore` by agent
+  id. The GUI does not supply a command path.
+- Transport reconnect (`RemoteClientEvent::Reconnected`) is
+  `SessionSubscribe` + catch-up on every live GUI thread, plus a session
+  list refresh. Closing the GUI or dropping SSH does not cancel a run.
 - Several GUIs can attach to one daemon at once (Envelope ids remapped).
   SSH/`run` is `setsid` + SIGHUP ignored so dropping the proxy does not
   kill the host. `serve` + systemd/launchd remains the service entry.

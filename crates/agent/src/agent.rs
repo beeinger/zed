@@ -30,7 +30,7 @@ pub use tool_permissions::*;
 pub use tools::*;
 
 use acp_thread::{
-    AcpThread, AgentConnection, AgentModelId, AgentModelSelector, AgentSessionInfo,
+    AcpThread, AgentModelId, AgentModelSelector, AgentSessionInfo,
     AgentSessionList, AgentSessionListRequest, AgentSessionListResponse, ClientUserMessageId,
     TokenUsageRatio,
 };
@@ -2419,24 +2419,12 @@ impl NativeAgentConnection {
                                             cx,
                                         )
                                     });
-                                    let connection = connection.clone();
-                                    let acp_thread = acp_thread.clone();
-                                    cx.spawn(async move |cx| {
+                                    cx.spawn(async move |_cx| {
                                         match wait_task.await {
                                             DaemonPromptWait::Answered(outcome) => {
                                                 let _ = response.send(outcome);
                                             }
                                             DaemonPromptWait::TimedOut => {
-                                                if let Some(connection) = connection
-                                                    && let Ok(session_id) = acp_thread.read_with(
-                                                        cx,
-                                                        |thread, _| thread.session_id().clone(),
-                                                    )
-                                                {
-                                                    cx.update(|cx| {
-                                                        connection.cancel(&session_id, cx);
-                                                    });
-                                                }
                                                 if let Some(option) = options.first_option_of_kind(
                                                     acp::PermissionOptionKind::RejectOnce,
                                                 ) {

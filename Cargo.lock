@@ -399,7 +399,6 @@ dependencies = [
  "log",
  "project",
  "release_channel",
- "remote",
  "reqwest_client",
  "serde",
  "serde_json",

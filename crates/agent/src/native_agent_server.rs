@@ -1,7 +1,7 @@
 use std::{any::Any, rc::Rc, sync::Arc};
 
 use agent_servers::{AgentServer, AgentServerDelegate};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use fs::Fs;
 use gpui::{App, Entity, Task};
 use project::{AgentId, Project};
@@ -32,9 +32,16 @@ impl AgentServer for NativeAgentServer {
     fn connect(
         &self,
         _delegate: AgentServerDelegate,
-        _project: Entity<Project>,
+        project: Entity<Project>,
         cx: &mut App,
     ) -> Task<Result<Rc<dyn acp_thread::AgentConnection>>> {
+        // FORK:remote-native-agent
+        if project.read(cx).is_via_remote_server() {
+            return Task::ready(Err(anyhow!(
+                "NativeAgent lives on the session host daemon, not in the GUI"
+            )));
+        }
+        // FORK:end
         log::debug!("NativeAgentServer::connect");
         let fs = self.fs.clone();
         let thread_store = self.thread_store.clone();

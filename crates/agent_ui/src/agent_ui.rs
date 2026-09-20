@@ -490,7 +490,9 @@ impl Agent {
         match self {
             Self::NativeAgent => {
                 // FORK:remote-native-agent
-                if project.read(cx).is_via_remote_server() {
+                if project.read(cx).is_via_remote_server()
+                    || workspace::open_local_via_daemon_registered()
+                {
                     return Rc::new(RemoteNativeAgentServer);
                 }
                 // FORK:end

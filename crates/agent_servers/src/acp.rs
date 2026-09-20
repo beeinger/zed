@@ -22,7 +22,6 @@ use project::agent_server_store::{
     AgentServerCommand, AgentServerStore, AllAgentServersSettings, CustomAgentServerSettings,
 };
 use project::{AgentId, Project};
-use remote::remote_client::Interactive;
 use serde::Deserialize;
 use settings::{AgentConfigOptionValue, SettingsStore};
 use std::path::PathBuf;
@@ -702,6 +701,9 @@ pub async fn connect(
         )
         .await;
     }
+    if session_client::gui_is_window() {
+        anyhow::bail!("ACP children must be spawned on the session host daemon, not in the GUI");
+    }
     // FORK:end
     let conn = AcpConnection::stdio(
         agent_id,
@@ -876,7 +878,9 @@ impl AcpConnection {
         cx: &mut AsyncApp,
     ) -> Result<Self> {
         // FORK:detach-external-acp
-        if project.read_with(cx, |project, _cx| project.is_via_remote_server()) {
+        if project.read_with(cx, |project, _cx| project.is_via_remote_server())
+            || session_client::gui_is_window()
+        {
             anyhow::bail!(
                 "ACP children must be spawned on the session host daemon, not SSH-wrapped in the GUI"
             );
@@ -891,30 +895,9 @@ impl AcpConnection {
                 .cloned()
         });
         let original_command = command.clone();
-        let (path, args, env) = project
-            .read_with(cx, |project, cx| {
-                project.remote_client().and_then(|client| {
-                    let template = client
-                        .read(cx)
-                        .build_command(
-                            Some(command.path.display().to_string()),
-                            &command.args,
-                            &command.env.clone().into_iter().flatten().collect(),
-                            root_dir.as_ref().map(|path| path.display().to_string()),
-                            None,
-                            Interactive::No,
-                        )
-                        .log_err()?;
-                    Some((template.program, template.args, template.env))
-                })
-            })
-            .unwrap_or_else(|| {
-                (
-                    command.path.display().to_string(),
-                    command.args,
-                    command.env.unwrap_or_default(),
-                )
-            });
+        let path = command.path.display().to_string();
+        let args = command.args;
+        let env = command.env.unwrap_or_default();
 
         let builder = ShellBuilder::new(&Shell::System, cfg!(windows)).non_interactive();
         let mut child = builder.build_std_command(Some(path.clone()), &args);

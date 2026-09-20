@@ -53,9 +53,11 @@ APPLIED detach-external-acp crates/agent_servers/Cargo.toml
 APPLIED remote-native-agent crates/agent_ui/src/agent_ui.rs
 APPLIED remote-native-agent crates/agent_ui/Cargo.toml
 APPLIED remote-native-agent crates/agent_ui/src/mention_set.rs
+APPLIED remote-native-agent crates/agent/src/native_agent_server.rs
 APPLIED local-daemon-default crates/workspace/src/workspace.rs
 APPLIED local-daemon-default crates/workspace/src/multi_workspace.rs
 APPLIED local-daemon-default crates/zed/src/zed.rs
+APPLIED local-daemon-default crates/git_ui/src/clone.rs
 APPLIED server-buffer-authority crates/project/src/buffer_store.rs
 APPLIED zstd-remote crates/remote/src/protocol.rs
 APPLIED zstd-remote crates/remote/Cargo.toml
