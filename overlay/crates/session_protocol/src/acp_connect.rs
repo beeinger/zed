@@ -35,6 +35,57 @@ pub struct AcpConnectResponse {
     pub resume_session: bool,
 }
 
+/// GUI → daemon: persist credentials in the daemon store.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SetCredentialsRequest {
+    pub url: String,
+    /// Keychain username. `"Bearer"` for LLM API keys; Zed cloud uses the user id.
+    #[serde(default)]
+    pub username: Option<String>,
+    pub api_key: Option<String>,
+}
+
+/// Daemon thread archive row (ACP `session/list` payload we control).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionInfoWire {
+    pub session_id: String,
+    pub title: Option<String>,
+    #[serde(default)]
+    pub work_dirs: Vec<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SessionListWire {
+    #[serde(default)]
+    pub sessions: Vec<SessionInfoWire>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeleteSessionRequest {
+    pub session_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelInfoWire {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub group: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ModelListWire {
+    #[serde(default)]
+    pub models: Vec<ModelInfoWire>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionModelRequest {
+    pub session_id: String,
+    pub model_id: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +108,18 @@ mod tests {
         };
         let json = serde_json::to_string(&request).expect("serialize");
         let parsed: AcpConnectRequest = serde_json::from_str(&json).expect("parse");
+        assert_eq!(parsed, request);
+    }
+
+    #[test]
+    fn set_credentials_roundtrip() {
+        let request = SetCredentialsRequest {
+            url: "https://api.example".into(),
+            username: Some("Bearer".into()),
+            api_key: Some("sk-test".into()),
+        };
+        let json = serde_json::to_string(&request).expect("serialize");
+        let parsed: SetCredentialsRequest = serde_json::from_str(&json).expect("parse");
         assert_eq!(parsed, request);
     }
 }

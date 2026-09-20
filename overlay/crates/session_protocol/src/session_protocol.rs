@@ -13,8 +13,14 @@ mod event_seq;
 mod jsonrpc;
 mod permission;
 
-pub use acp_connect::{AcpConnectRequest, AcpConnectResponse, NATIVE_AGENT_ID, is_native_agent_id};
-pub use acp_tunnel::{CatchUpResponse, JsonRpcLine, SubscribeRequest};
+pub use acp_connect::{
+    AcpConnectRequest, AcpConnectResponse, DeleteSessionRequest, ModelInfoWire, ModelListWire,
+    NATIVE_AGENT_ID, SessionInfoWire, SessionListWire, SessionModelRequest, SetCredentialsRequest,
+    is_native_agent_id,
+};
+pub use acp_tunnel::{
+    CatchUpResponse, JsonRpcLine, SubscribeRequest, catch_up_session_update_params,
+};
 pub use coalesce::CoalesceConfig;
 pub use daemon_id::{DAEMON_ID_BODY_LEN, daemon_socket_id};
 pub use event_log::EventLog;

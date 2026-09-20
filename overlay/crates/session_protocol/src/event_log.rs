@@ -77,4 +77,48 @@ mod tests {
         assert_eq!(catch_up.events_json.len(), 1);
         assert_eq!(catch_up.to_seq, EventSeq(1));
     }
+
+    #[test]
+    fn disconnect_does_not_drop_log_and_reattach_is_delta() {
+        use crate::jsonrpc::{methods, notification};
+        use serde_json::json;
+
+        let mut log = EventLog::new();
+        let first = notification(
+            methods::SESSION_UPDATE,
+            json!({
+                "sessionId": "thread-a",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": { "type": "text", "text": "before drop" }
+                }
+            }),
+        )
+        .unwrap();
+        log.append(first);
+
+        // GUI disconnect: no subscriber. The turn continues appending.
+        let second = notification(
+            methods::SESSION_UPDATE,
+            json!({
+                "sessionId": "thread-a",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": { "type": "text", "text": "after drop" }
+                }
+            }),
+        )
+        .unwrap();
+        log.append(second.clone());
+
+        let seen_before_drop = EventSeq(1);
+        let catch_up = log.catch_up(seen_before_drop);
+        assert_eq!(catch_up.from_seq, EventSeq(2));
+        assert_eq!(catch_up.to_seq, EventSeq(2));
+        assert_eq!(catch_up.events_json, vec![second]);
+
+        let already_caught_up = log.catch_up(catch_up.to_seq);
+        assert!(already_caught_up.is_empty());
+        assert_eq!(already_caught_up.to_seq, EventSeq(2));
+    }
 }

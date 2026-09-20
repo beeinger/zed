@@ -18,8 +18,16 @@ pub mod methods {
     pub const SESSION_UPDATE: &str = "session/update";
     pub const SESSION_REQUEST_PERMISSION: &str = "session/request_permission";
     pub const ELICITATION_CREATE: &str = "elicitation/create";
+    pub const SESSION_LIST: &str = "session/list";
     /// Spawn or reuse a daemon-held external ACP child. Not an upstream ACP method.
     pub const ACP_CONNECT: &str = "zed/acp_connect";
+    /// Store an LLM provider API key (or Zed cloud token) on the daemon.
+    pub const SET_CREDENTIALS: &str = "zed/set_credentials";
+    pub const SESSION_DELETE: &str = "zed/delete_session";
+    pub const SESSION_DELETE_ALL: &str = "zed/delete_sessions";
+    pub const LIST_MODELS: &str = "zed/list_models";
+    pub const SELECT_MODEL: &str = "zed/select_model";
+    pub const SELECTED_MODEL: &str = "zed/selected_model";
 }
 
 /// Wire object carried in `SessionAgentRpc.json`.
@@ -233,5 +241,8 @@ mod tests {
         assert_eq!(methods::ELICITATION_CREATE, "elicitation/create");
         assert_eq!(methods::ACP_CONNECT, "zed/acp_connect");
         assert_eq!(methods::SESSION_RESUME, "session/resume");
+        assert_eq!(methods::SET_CREDENTIALS, "zed/set_credentials");
+        assert_eq!(methods::SESSION_LIST, "session/list");
+        assert_eq!(methods::LIST_MODELS, "zed/list_models");
     }
 }

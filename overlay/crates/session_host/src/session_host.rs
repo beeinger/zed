@@ -5,12 +5,15 @@
 //! back to the GUI.
 
 mod acp_rpc;
+mod credentials;
+mod dirty_buffers;
 mod external_acp;
 mod gui_prompts;
 
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use acp_thread::AcpThread;
 use agent::{NativeAgent, Templates, ThreadStore};
@@ -19,15 +22,15 @@ use anyhow::Result;
 use client::{Client, RefreshLlmTokenListener, UserStore};
 use clock::RealSystemClock;
 use fs::Fs;
-use gpui::{App, AppContext as _, AsyncApp, Entity, Global};
+use gpui::{App, AppContext as _, AsyncApp, Context, Entity, Global, Subscription, Task};
 use http_client::{HttpClient, HttpClientWithUrl};
 use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
 use project::{HeadlessProjectStores, Project};
 use rpc::{AnyProtoClient, TypedEnvelope, proto};
 use session_protocol::{
-    DEFAULT_PROMPT_TIMEOUT_MS, DetachedPermissions, DisconnectedPromptWait, EventLog, EventSeq,
-    methods, notification,
+    CoalesceConfig, DEFAULT_PROMPT_TIMEOUT_MS, DetachedPermissions, DisconnectedPromptWait,
+    EventLog, EventSeq, methods, notification,
 };
 use settings::{
     DetachedPermissionsContent, DisconnectedPromptWaitContent, Settings, SettingsContent,
@@ -139,6 +142,18 @@ pub struct SessionHost {
     _gui_attached_rx: watch::Receiver<u64>,
     gui_generation: u64,
     next_rpc_id: i64,
+    pending_deltas: HashMap<(String, bool), PendingDelta>,
+    coalesce_flush: Option<Task<()>>,
+    buffer_subscriptions: Vec<Subscription>,
+}
+
+struct PendingDelta {
+    session_id: acp::SessionId,
+    thought: bool,
+    text: String,
+    started_at: Instant,
+    persist: bool,
+    agent_id: String,
 }
 
 struct GlobalSessionHost(Entity<SessionHost>);
@@ -158,6 +173,7 @@ impl SessionHost {
     fn start(init: SessionHostInit, cx: &mut App) -> Result<Entity<Self>> {
         language_model::init(cx);
         gpui_tokio::init(cx);
+        crate::credentials::install_daemon_credentials(cx);
         if cx.has_global::<SettingsStore>() {
             SessionHostSettings::register(cx);
         }
@@ -199,6 +215,9 @@ impl SessionHost {
             _gui_attached_rx: gui_attached_rx,
             gui_generation: 0,
             next_rpc_id: 0,
+            pending_deltas: HashMap::new(),
+            coalesce_flush: None,
+            buffer_subscriptions: Vec::new(),
         });
 
         host.update(cx, |host, cx| {
@@ -215,12 +234,15 @@ impl SessionHost {
                     });
                 }));
             });
+            host.watch_buffers(cx);
         });
 
         init.session
             .add_request_handler(host.downgrade(), Self::handle_subscribe);
         init.session
             .add_request_handler(host.downgrade(), Self::handle_rpc);
+        init.session
+            .add_request_handler(host.downgrade(), Self::handle_heartbeat);
 
         Ok(host)
     }
@@ -230,7 +252,73 @@ impl SessionHost {
         session_notification: acp::SessionNotification,
         persist: bool,
         agent_id: &str,
-        cx: &mut App,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((thought, text)) = delta_text(&session_notification.update) {
+            let key = (session_notification.session_id.to_string(), thought);
+            let pending = self.pending_deltas.entry(key).or_insert_with(|| PendingDelta {
+                session_id: session_notification.session_id.clone(),
+                thought,
+                text: String::new(),
+                started_at: Instant::now(),
+                persist,
+                agent_id: agent_id.to_string(),
+            });
+            pending.text.push_str(&text);
+            pending.persist |= persist;
+            let waited = pending.started_at.elapsed();
+            let chars = pending.text.chars().count();
+            if CoalesceConfig::SLOW_LINK.should_flush(waited, chars) {
+                self.flush_pending_deltas(cx);
+            } else {
+                self.schedule_coalesce_flush(cx);
+            }
+            return;
+        }
+        self.flush_pending_deltas(cx);
+        self.push_session_update(session_notification, persist, agent_id, cx);
+    }
+
+    fn schedule_coalesce_flush(&mut self, cx: &mut Context<Self>) {
+        if self.coalesce_flush.is_some() {
+            return;
+        }
+        let delay = CoalesceConfig::SLOW_LINK.max_interval;
+        self.coalesce_flush = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            this.update(cx, |host, cx| {
+                host.coalesce_flush = None;
+                host.flush_pending_deltas(cx);
+            })
+            .ok();
+        }));
+    }
+
+    fn flush_pending_deltas(&mut self, cx: &mut Context<Self>) {
+        let pending = std::mem::take(&mut self.pending_deltas);
+        self.coalesce_flush = None;
+        for pending in pending.into_values() {
+            if pending.text.is_empty() {
+                continue;
+            }
+            let chunk = acp::ContentChunk::new(pending.text.into());
+            let update = if pending.thought {
+                acp::SessionUpdate::AgentThoughtChunk(chunk)
+            } else {
+                acp::SessionUpdate::AgentMessageChunk(chunk)
+            };
+            let notification =
+                acp::SessionNotification::new(pending.session_id, update);
+            self.push_session_update(notification, pending.persist, &pending.agent_id, cx);
+        }
+    }
+
+    fn push_session_update(
+        &mut self,
+        session_notification: acp::SessionNotification,
+        persist: bool,
+        agent_id: &str,
+        cx: &mut Context<Self>,
     ) {
         let json = match notification(methods::SESSION_UPDATE, &session_notification) {
             Ok(json) => json,
@@ -239,25 +327,27 @@ impl SessionHost {
                 return;
             }
         };
-        if persist {
-            let seq = self.log.append(json.clone()).0;
-            let proto = self.session.clone();
-            let agent_id = agent_id.to_string();
-            cx.spawn(async move |_| {
-                if let Err(error) = proto
-                    .request(proto::SessionAgentRpc {
-                        json,
-                        seq,
-                        agent_id,
-                    })
-                    .await
-                {
-                    log::debug!("session/update push skipped (no GUI?): {error:#}");
-                }
-                anyhow::Ok(())
-            })
-            .detach();
-        }
+        let seq = if persist {
+            self.log.append(json.clone()).0
+        } else {
+            0
+        };
+        let proto = self.session.clone();
+        let agent_id = agent_id.to_string();
+        cx.spawn(async move |_, _| {
+            if let Err(error) = proto
+                .request(proto::SessionAgentRpc {
+                    json,
+                    seq,
+                    agent_id,
+                })
+                .await
+            {
+                log::debug!("session/update push skipped (no GUI?): {error:#}");
+            }
+            anyhow::Ok(())
+        })
+        .detach();
     }
 
     pub(crate) fn retain_daemon_thread(
@@ -292,6 +382,7 @@ impl SessionHost {
     ) -> Result<proto::SessionCatchUp> {
         let last_seq = EventSeq(envelope.payload.last_seq);
         Ok(this.update(&mut cx, |host, cx| {
+            host.flush_pending_deltas(cx);
             host.refresh_prompt_policy(cx);
             host.notify_gui_attached();
             let catch_up = host.log.catch_up(last_seq);
@@ -316,6 +407,47 @@ impl SessionHost {
             seq: 0,
             agent_id,
         })
+    }
+
+    async fn handle_heartbeat(
+        _this: Entity<Self>,
+        envelope: TypedEnvelope<proto::SessionHeartbeat>,
+        _cx: AsyncApp,
+    ) -> Result<proto::SessionHeartbeat> {
+        Ok(proto::SessionHeartbeat {
+            interval_ms: if envelope.payload.interval_ms == 0 {
+                15_000
+            } else {
+                envelope.payload.interval_ms
+            },
+            timeout_ms: if envelope.payload.timeout_ms == 0 {
+                15_000
+            } else {
+                envelope.payload.timeout_ms
+            },
+            max_missed: if envelope.payload.max_missed == 0 {
+                10
+            } else {
+                envelope.payload.max_missed
+            },
+        })
+    }
+}
+
+fn delta_text(update: &acp::SessionUpdate) -> Option<(bool, String)> {
+    let (thought, value) = match update {
+        acp::SessionUpdate::AgentMessageChunk(chunk) => (false, serde_json::to_value(chunk).ok()?),
+        acp::SessionUpdate::AgentThoughtChunk(chunk) => (true, serde_json::to_value(chunk).ok()?),
+        _ => return None,
+    };
+    let text = value
+        .pointer("/content/text")
+        .or_else(|| value.pointer("/text"))
+        .and_then(|value| value.as_str())?;
+    if text.is_empty() {
+        None
+    } else {
+        Some((thought, text.to_string()))
     }
 }
 

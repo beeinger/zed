@@ -38,8 +38,11 @@ markers; if a marker disappeared, stop and restore it from `TOUCHPOINTS.md`.
 | `crates/workspace/src/workspace.rs` | Stable daemon identifier, local same-host |
 | `crates/workspace/src/persistence.rs` | Persist `RemoteConnectionKind::Local` |
 | `crates/remote/src/transport.rs` | `pub mod local`, pub stdio helper |
-| `crates/zed/src/main.rs` | `session_transport::init` |
+| `crates/zed/src/main.rs` | `session_transport::init`, `session_client::init`, open-via-daemon |
 | `crates/agent_ui/src/agent_ui.rs` | Remote native-agent connection |
+| `crates/language_model/src/api_key.rs` | Forward GUI API keys to the daemon |
+| `crates/project/src/buffer_store.rs` | Retain dirty buffers after GUI close |
+| `crates/remote_server/src/server.rs` | Attach-not-kill, no idle quit, `serve` |
 | `crates/remote_server/Cargo.toml` | `session_host` / `agent` prod deps |
 | `crates/zed/Cargo.toml` | `session_client` / `session_transport` |
 
@@ -48,7 +51,8 @@ markers; if a marker disappeared, stop and restore it from `TOUCHPOINTS.md`.
 1. `overlay/scripts/check-touchpoints.sh`
 2. `cargo test -p session_protocol -p session_host -p session_client -p session_transport`
 3. Existing `remote_server` tests (`crates/remote_server/src/remote_editing_tests.rs`)
-4. Do **not** silently absorb upstream refactors into overlay crates. If they
+4. Overlay reconnect tests: event log catch-up after a gap (`session_protocol`)
+5. Do **not** silently absorb upstream refactors into overlay crates. If they
    moved a hook, update `TOUCHPOINTS.md` only.
 
 AI-assisted upgrades stay easy because the semantic diff of this fork is:

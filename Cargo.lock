@@ -537,6 +537,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_lenient",
+ "session_client",
  "settings",
  "shlex 1.3.0",
  "streaming_diff",
@@ -15205,6 +15206,7 @@ dependencies = [
  "urlencoding",
  "util",
  "which",
+ "zstd 0.11.2+zstd.1.5.2",
 ]
 
 [[package]]
@@ -16642,9 +16644,12 @@ dependencies = [
  "action_log",
  "agent-client-protocol",
  "anyhow",
+ "chrono",
+ "client",
  "collections",
  "futures 0.3.34",
  "gpui",
+ "language_model",
  "log",
  "project",
  "remote",
@@ -16652,8 +16657,10 @@ dependencies = [
  "serde",
  "serde_json",
  "session_protocol",
+ "settings",
  "util",
  "watch",
+ "zed_credentials_provider",
 ]
 
 [[package]]
@@ -16667,6 +16674,7 @@ dependencies = [
  "anyhow",
  "client",
  "clock",
+ "credentials_provider",
  "fs",
  "futures 0.3.34",
  "gpui",
@@ -16677,6 +16685,7 @@ dependencies = [
  "language_models",
  "log",
  "node_runtime",
+ "paths",
  "project",
  "proto",
  "rpc",
@@ -16686,6 +16695,7 @@ dependencies = [
  "settings",
  "util",
  "watch",
+ "zed_credentials_provider",
 ]
 
 [[package]]
@@ -23062,6 +23072,7 @@ dependencies = [
  "serde",
  "serde_json",
  "session",
+ "session_client",
  "session_protocol",
  "session_transport",
  "settings",

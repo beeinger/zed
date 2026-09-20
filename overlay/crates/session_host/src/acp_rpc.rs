@@ -5,22 +5,24 @@
 
 use std::rc::Rc;
 
-use acp_thread::AgentConnection as _;
+use acp_thread::{AgentConnection as _, AgentModelId, AgentModelList, AgentSessionListRequest};
 use agent::NativeAgentConnection;
 use agent_client_protocol::schema::{
     ProtocolVersion,
     v1::{
         AgentCapabilities, AuthenticateRequest, CancelNotification, InitializeRequest,
         InitializeResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
-        NewSessionResponse, PromptRequest, SessionCapabilities, SessionListCapabilities,
-        SessionResumeCapabilities,
+        NewSessionResponse, PromptRequest, ResumeSessionRequest, SessionCapabilities,
+        SessionListCapabilities, SessionResumeCapabilities,
     },
 };
+use agent_client_protocol::schema::v1 as acp;
 use anyhow::{Context as _, Result, anyhow};
 use gpui::{AsyncApp, Entity};
 use session_protocol::{
-    INTERNAL_ERROR, INVALID_PARAMS, JsonRpcMessage, METHOD_NOT_FOUND, error_response,
-    is_native_agent_id, methods, success,
+    DeleteSessionRequest, INTERNAL_ERROR, INVALID_PARAMS, JsonRpcMessage, METHOD_NOT_FOUND,
+    ModelListWire, SessionListWire, SessionModelRequest, error_response, is_native_agent_id,
+    methods, success,
 };
 use util::path_list::PathList;
 
@@ -72,6 +74,75 @@ impl SessionHost {
             },
             methods::SESSION_LOAD => match incoming.params_as::<LoadSessionRequest>() {
                 Ok(request) => match Self::session_load(this, request, cx).await {
+                    Ok(response) => success_or_internal(id, response),
+                    Err(error) => error_response(id, INTERNAL_ERROR, error.to_string()),
+                },
+                Err(error) => error_response(id, INVALID_PARAMS, error.to_string()),
+            },
+            methods::SESSION_RESUME => match incoming.params_as::<ResumeSessionRequest>() {
+                Ok(request) => {
+                    let load = LoadSessionRequest::new(request.session_id, request.cwd);
+                    match Self::session_load(this, load, cx).await {
+                        Ok(_) => success_or_internal(id, LoadSessionResponse::new()),
+                        Err(error) => error_response(id, INTERNAL_ERROR, error.to_string()),
+                    }
+                }
+                Err(error) => error_response(id, INVALID_PARAMS, error.to_string()),
+            },
+            methods::SET_CREDENTIALS => match incoming
+                .params_as::<session_protocol::SetCredentialsRequest>()
+            {
+                Ok(request) => {
+                    let username = request
+                        .username
+                        .filter(|username| !username.is_empty())
+                        .unwrap_or_else(|| "Bearer".to_string());
+                    let task = this.update(cx, |_host, cx| {
+                        crate::credentials::store_api_key(
+                            request.url,
+                            username,
+                            request.api_key,
+                            cx,
+                        )
+                    });
+                    match task.await {
+                        Ok(()) => success_or_internal(id, serde_json::json!({})),
+                        Err(error) => error_response(id, INTERNAL_ERROR, error.to_string()),
+                    }
+                }
+                Err(error) => error_response(id, INVALID_PARAMS, error.to_string()),
+            },
+            methods::SESSION_LIST => match Self::session_list(this, cx).await {
+                Ok(response) => success_or_internal(id, response),
+                Err(error) => error_response(id, INTERNAL_ERROR, error.to_string()),
+            },
+            methods::SESSION_DELETE => match incoming.params_as::<DeleteSessionRequest>() {
+                Ok(request) => match Self::session_delete(this, request, cx).await {
+                    Ok(()) => success_or_internal(id, serde_json::json!({})),
+                    Err(error) => error_response(id, INTERNAL_ERROR, error.to_string()),
+                },
+                Err(error) => error_response(id, INVALID_PARAMS, error.to_string()),
+            },
+            methods::SESSION_DELETE_ALL => match Self::session_delete_all(this, cx).await {
+                Ok(()) => success_or_internal(id, serde_json::json!({})),
+                Err(error) => error_response(id, INTERNAL_ERROR, error.to_string()),
+            },
+            methods::LIST_MODELS => match incoming.params_as::<SessionModelRequest>() {
+                Ok(request) => match Self::list_models(this, request, cx).await {
+                    Ok(response) => success_or_internal(id, response),
+                    Err(error) => error_response(id, INTERNAL_ERROR, error.to_string()),
+                },
+                Err(error) => error_response(id, INVALID_PARAMS, error.to_string()),
+            },
+            methods::SELECT_MODEL => match incoming.params_as::<SessionModelRequest>() {
+                Ok(request) => match Self::select_model(this, request, cx).await {
+                    Ok(()) => success_or_internal(id, serde_json::json!({})),
+                    Err(error) => error_response(id, INTERNAL_ERROR, error.to_string()),
+                },
+                Err(error) => error_response(id, INVALID_PARAMS, error.to_string()),
+            },
+            methods::SELECTED_MODEL => match incoming.params_as::<SessionModelRequest>() {
+                Ok(request) => match Self::selected_model(this, request, cx).await {
                     Ok(response) => success_or_internal(id, response),
                     Err(error) => error_response(id, INTERNAL_ERROR, error.to_string()),
                 },
@@ -178,9 +249,154 @@ impl SessionHost {
         });
         Ok(())
     }
+
+    async fn session_list(
+        this: Entity<Self>,
+        cx: &mut AsyncApp,
+    ) -> Result<SessionListWire> {
+        let task = this
+            .update(cx, |host, cx| {
+                NativeAgentConnection(host.agent.clone())
+                    .session_list(cx)
+                    .map(|list| list.list_sessions(AgentSessionListRequest::default(), cx))
+            })
+            .context("session list unavailable")?;
+        let response = task.await.context("list native agent sessions")?;
+        Ok(SessionListWire {
+            sessions: response
+                .sessions
+                .into_iter()
+                .map(|info| session_protocol::SessionInfoWire {
+                    session_id: info.session_id.to_string(),
+                    title: info.title.map(|title| title.to_string()),
+                    work_dirs: info
+                        .work_dirs
+                        .map(|paths| {
+                            paths
+                                .ordered_paths()
+                                .map(|path| path.display().to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    updated_at: info.updated_at.map(|time| time.to_rfc3339()),
+                })
+                .collect(),
+        })
+    }
+
+    async fn session_delete(
+        this: Entity<Self>,
+        request: DeleteSessionRequest,
+        cx: &mut AsyncApp,
+    ) -> Result<()> {
+        let session_id = acp::SessionId::new(request.session_id);
+        let task = this
+            .update(cx, |host, cx| {
+                NativeAgentConnection(host.agent.clone())
+                    .session_list(cx)
+                    .map(|list| list.delete_session(&session_id, cx))
+            })
+            .context("session delete unavailable")?;
+        task.await.context("delete native agent session")
+    }
+
+    async fn session_delete_all(this: Entity<Self>, cx: &mut AsyncApp) -> Result<()> {
+        let task = this
+            .update(cx, |host, cx| {
+                NativeAgentConnection(host.agent.clone())
+                    .session_list(cx)
+                    .map(|list| list.delete_sessions(cx))
+            })
+            .context("session delete-all unavailable")?;
+        task.await.context("delete native agent sessions")
+    }
+
+    async fn list_models(
+        this: Entity<Self>,
+        request: SessionModelRequest,
+        cx: &mut AsyncApp,
+    ) -> Result<ModelListWire> {
+        let session_id = acp::SessionId::new(request.session_id);
+        let task = this.update(cx, |host, cx| {
+            let selector = NativeAgentConnection(host.agent.clone())
+                .model_selector(&session_id)
+                .context("native agent has no model selector")?;
+            anyhow::Ok(selector.list_models(cx))
+        })?;
+        let list = task.await.context("list models")?;
+        Ok(model_list_wire(list))
+    }
+
+    async fn select_model(
+        this: Entity<Self>,
+        request: SessionModelRequest,
+        cx: &mut AsyncApp,
+    ) -> Result<()> {
+        let session_id = acp::SessionId::new(request.session_id.clone());
+        let model_id = request
+            .model_id
+            .context("select_model requires model_id")?;
+        let task = this.update(cx, |host, cx| {
+            let selector = NativeAgentConnection(host.agent.clone())
+                .model_selector(&session_id)
+                .context("native agent has no model selector")?;
+            anyhow::Ok(selector.select_model(AgentModelId::new(model_id.as_str()), cx))
+        })?;
+        task.await.context("select model")
+    }
+
+    async fn selected_model(
+        this: Entity<Self>,
+        request: SessionModelRequest,
+        cx: &mut AsyncApp,
+    ) -> Result<session_protocol::ModelInfoWire> {
+        let session_id = acp::SessionId::new(request.session_id);
+        let task = this.update(cx, |host, cx| {
+            let selector = NativeAgentConnection(host.agent.clone())
+                .model_selector(&session_id)
+                .context("native agent has no model selector")?;
+            anyhow::Ok(selector.selected_model(cx))
+        })?;
+        let info = task.await.context("selected model")?;
+        Ok(model_info_wire(info, None))
+    }
 }
 
 fn success_or_internal(id: Option<serde_json::Value>, value: impl serde::Serialize) -> String {
     success(id.clone(), value)
         .unwrap_or_else(|error| error_response(id, INTERNAL_ERROR, error.to_string()))
+}
+
+fn model_list_wire(list: AgentModelList) -> ModelListWire {
+    match list {
+        AgentModelList::Flat(models) => ModelListWire {
+            models: models
+                .into_iter()
+                .map(|model| model_info_wire(model, None))
+                .collect(),
+        },
+        AgentModelList::Grouped(groups) => ModelListWire {
+            models: groups
+                .into_iter()
+                .flat_map(|(group, models)| {
+                    let group = group.0.to_string();
+                    models
+                        .into_iter()
+                        .map(move |model| model_info_wire(model, Some(group.clone())))
+                })
+                .collect(),
+        },
+    }
+}
+
+fn model_info_wire(
+    info: acp_thread::AgentModelInfo,
+    group: Option<String>,
+) -> session_protocol::ModelInfoWire {
+    session_protocol::ModelInfoWire {
+        id: info.id.to_string(),
+        name: info.name.to_string(),
+        description: info.description.map(|description| description.to_string()),
+        group,
+    }
 }

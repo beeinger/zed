@@ -5,11 +5,45 @@ use futures::{FutureExt, future};
 use gpui::{AsyncApp, Context, SharedString, Task};
 use gpui_util::ResultExt as _;
 use std::{
+    collections::HashMap,
     fmt::{Display, Formatter},
-    sync::Arc,
+    sync::{Arc, LazyLock, Mutex, OnceLock},
 };
 
 use crate::AuthenticateError;
+
+/// FORK:daemon-credentials — GUI key store/load notifies overlay so the daemon can persist the same secret.
+pub type CredentialForwarder = fn(url: &str, key: Option<&str>, cx: &gpui::App);
+
+static CREDENTIAL_FORWARDER: OnceLock<CredentialForwarder> = OnceLock::new();
+static FORWARDED_CREDENTIALS: LazyLock<Mutex<HashMap<String, Option<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub fn set_credential_forwarder(forwarder: CredentialForwarder) {
+    let _ = CREDENTIAL_FORWARDER.set(forwarder);
+}
+
+/// Replay keys loaded before a daemon hub existed (paste-then-open-agent).
+pub fn replay_forwarded_credentials(cx: &gpui::App) {
+    let Ok(snapshot) = FORWARDED_CREDENTIALS.lock() else {
+        return;
+    };
+    let Some(forwarder) = CREDENTIAL_FORWARDER.get() else {
+        return;
+    };
+    for (url, key) in snapshot.iter() {
+        forwarder(url, key.as_deref(), cx);
+    }
+}
+
+fn forward_credential(url: &str, key: Option<&str>, cx: &gpui::App) {
+    if let Ok(mut forwarded) = FORWARDED_CREDENTIALS.lock() {
+        forwarded.insert(url.to_string(), key.map(str::to_string));
+    }
+    if let Some(forwarder) = CREDENTIAL_FORWARDER.get() {
+        forwarder(url, key, cx);
+    }
+}
 
 /// Manages a single API key for a language model provider. API keys either come from environment
 /// variables or the system keychain.
@@ -120,7 +154,7 @@ impl ApiKeyState {
             }
             ent.update(cx, |ent, cx| {
                 let this = get_this(ent);
-                this.url = url;
+                this.url = url.clone();
                 this.load_status = match &key {
                     Some(key) => LoadStatus::Loaded(ApiKey {
                         source: ApiKeySource::SystemKeychain,
@@ -128,6 +162,9 @@ impl ApiKeyState {
                     }),
                     None => LoadStatus::NotPresent,
                 };
+                // FORK:daemon-credentials
+                forward_credential(&url, key.as_deref(), cx);
+                // FORK:end
                 cx.notify();
             })
         })
@@ -174,9 +211,12 @@ impl ApiKeyState {
             && !key.is_empty()
         {
             let api_key = ApiKey::from_env(self.env_var.name.clone(), key);
-            self.url = url;
+            self.url = url.clone();
             self.load_status = LoadStatus::Loaded(api_key);
             self.load_task = None;
+            // FORK:daemon-credentials
+            forward_credential(&url, Some(key), cx);
+            // FORK:end
             cx.notify();
             return Task::ready(Ok(()));
         }
@@ -214,9 +254,14 @@ impl ApiKeyState {
                     ApiKey::load_from_system_keychain_impl(&url, provider.as_ref(), cx).await;
                 ent.update(cx, |ent, cx| {
                     let this = get_this(ent);
-                    this.url = url;
+                    this.url = url.clone();
                     this.load_status = load_status;
                     this.load_task = None;
+                    // FORK:daemon-credentials
+                    if let LoadStatus::Loaded(api_key) = &this.load_status {
+                        forward_credential(&url, Some(api_key.key()), cx);
+                    }
+                    // FORK:end
                     cx.notify();
                 })
                 .ok();

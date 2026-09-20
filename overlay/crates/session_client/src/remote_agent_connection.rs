@@ -6,21 +6,29 @@
 
 use std::{any::Any, collections::HashMap as StdHashMap, rc::Rc};
 
-use acp_thread::{AcpThread, AgentConnection, ElicitationStore};
+use acp_thread::{
+    AcpThread, AgentConnection, AgentModelId, AgentModelInfo, AgentModelList, AgentModelSelector,
+    AgentSessionInfo, AgentSessionList, AgentSessionListRequest, AgentSessionListResponse,
+    ElicitationStore,
+};
 use action_log::ActionLog;
 use agent_client_protocol::schema::v1 as acp;
 use anyhow::{Context as _, Result, anyhow};
-use collections::HashMap;
+use collections::{HashMap, IndexMap};
 use gpui::{
-    App, AppContext as _, AsyncApp, Entity, EntityId, Global, SharedString, Task, WeakEntity,
+    App, AppContext as _, AsyncApp, Entity, EntityId, Global, SharedString, Task, TaskExt as _,
+    WeakEntity,
 };
 use project::{AgentId, Project, agent_server_store::AgentServerCommand};
 use rpc::{AnyProtoClient, TypedEnvelope, proto};
 use session_protocol::{
-    AUTHORIZATION_KIND_META, AcpConnectRequest, AcpConnectResponse, CatchUpResponse, EventSeq,
-    INTERNAL_ERROR, INVALID_PARAMS, JsonRpcMessage, NATIVE_AGENT_ID, error_response, methods,
+    AUTHORIZATION_KIND_META, AcpConnectRequest, AcpConnectResponse, CatchUpResponse,
+    DeleteSessionRequest, EventSeq, INTERNAL_ERROR, INVALID_PARAMS, JsonRpcMessage,
+    ModelListWire, NATIVE_AGENT_ID, SessionListWire, SessionModelRequest, error_response, methods,
     notification, request,
 };
+use settings::Settings as _;
+use std::path::PathBuf;
 use util::path_list::PathList;
 
 /// ACP-over-Envelope connection. GUI death does not cancel the daemon turn;
@@ -50,6 +58,7 @@ struct RemoteAgentSession {
     next_rpc_id: i64,
     /// Last applied EventLog seq per ACP session (global log index, not a count).
     last_seq_by_session: HashMap<acp::SessionId, u64>,
+    global_last_seq: u64,
     request_elicitations: Entity<ElicitationStore>,
 }
 
@@ -78,10 +87,76 @@ fn new_remote_session(proto: AnyProtoClient, cx: &mut App) -> Entity<RemoteAgent
         sessions: HashMap::default(),
         next_rpc_id: 0,
         last_seq_by_session: HashMap::default(),
+        global_last_seq: 0,
         request_elicitations,
     });
     proto.add_request_handler(session.downgrade(), RemoteAgentSession::handle_inbound);
     session
+}
+
+pub(crate) fn forward_credentials(url: &str, key: Option<&str>, cx: &App) {
+    forward_credentials_with_username(url, Some("Bearer"), key, cx);
+}
+
+fn forward_credentials_with_username(
+    url: &str,
+    username: Option<&str>,
+    key: Option<&str>,
+    cx: &App,
+) {
+    let Some(hub) = cx.try_global::<RemoteAgentHub>() else {
+        return;
+    };
+    let Ok(json) = request(
+        1,
+        methods::SET_CREDENTIALS,
+        session_protocol::SetCredentialsRequest {
+            url: url.to_string(),
+            username: username.map(str::to_string),
+            api_key: key.map(str::to_string),
+        },
+    ) else {
+        return;
+    };
+    for session in hub.by_remote_client.values() {
+        let proto = session.read(cx).proto.clone();
+        let json = json.clone();
+        cx.spawn(async move |_| {
+            proto
+                .request(proto::SessionAgentRpc {
+                    json,
+                    seq: 0,
+                    agent_id: String::new(),
+                })
+                .await
+                .context("zed/set_credentials")?;
+            anyhow::Ok(())
+        })
+        .detach();
+    }
+}
+
+fn flush_credentials_to_hub(cx: &App) {
+    language_model::replay_forwarded_credentials(cx);
+    let Some(settings) = client::ClientSettings::try_get(cx) else {
+        return;
+    };
+    let url = settings
+        .credentials_url
+        .clone()
+        .unwrap_or_else(|| settings.server_url.clone());
+    let provider = zed_credentials_provider::global(cx);
+    cx.spawn(async move |cx| {
+        let Some((username, password)) = provider.read_credentials(&url, cx).await? else {
+            return anyhow::Ok(());
+        };
+        let api_key = String::from_utf8(password).context("zed cloud token is not utf8")?;
+        cx.update(|cx| {
+            forward_credentials_with_username(&url, Some(&username), Some(&api_key), cx);
+        });
+        anyhow::Ok(())
+    })
+    .detach_and_log_err(cx);
 }
 
 impl RemoteAgentConnection {
@@ -100,6 +175,7 @@ impl RemoteAgentConnection {
         let remote_id = remote.entity_id();
         let proto = remote.read(cx).proto_client();
         let session = session_for_remote(remote_id, proto, cx);
+        flush_credentials_to_hub(cx);
         Ok(Rc::new(Self::native(session, cx)))
     }
 
@@ -201,6 +277,7 @@ impl RemoteAgentSession {
                         if seq > 0 {
                             let last = session.last_seq_by_session.entry(session_id).or_insert(0);
                             *last = (*last).max(seq);
+                            session.global_last_seq = session.global_last_seq.max(seq);
                         }
                         Ok(())
                     });
@@ -391,9 +468,21 @@ impl AgentConnection for RemoteAgentConnection {
         let request = acp::NewSessionRequest::new(cwd);
         let this = self.clone();
         let create = self.rpc::<acp::NewSessionResponse>(methods::SESSION_NEW, request, cx);
+        let last_seq = self.session.read(cx).global_last_seq;
+        let subscribe = self.subscribe(last_seq, cx);
         cx.spawn(async move |cx| {
             let response = create.await?;
-            cx.update(|cx| this.open_local_thread(response.session_id, project, work_dirs, cx))
+            let thread =
+                cx.update(|cx| this.open_local_thread(response.session_id, project, work_dirs, cx))?;
+            let catch_up = subscribe.await?;
+            cx.update(|cx| {
+                apply_catch_up(&thread, &catch_up_from_proto(&catch_up), cx)?;
+                this.session.update(cx, |session, _| {
+                    session.global_last_seq = session.global_last_seq.max(catch_up.to_seq);
+                });
+                anyhow::Ok(())
+            })?;
+            Ok(thread)
         })
     }
 
@@ -485,6 +574,19 @@ impl AgentConnection for RemoteAgentConnection {
         Some(self.request_elicitations.clone())
     }
 
+    fn session_list(&self, _cx: &mut App) -> Option<Rc<dyn AgentSessionList>> {
+        Some(Rc::new(RemoteAgentSessionList {
+            connection: self.clone(),
+        }))
+    }
+
+    fn model_selector(&self, session_id: &acp::SessionId) -> Option<Rc<dyn AgentModelSelector>> {
+        Some(Rc::new(RemoteAgentModelSelector {
+            connection: self.clone(),
+            session_id: session_id.clone(),
+        }))
+    }
+
     fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
         self
     }
@@ -561,6 +663,7 @@ impl RemoteAgentConnection {
                         .entry(session_id.clone())
                         .or_insert(0);
                     *last = (*last).max(catch_up.to_seq);
+                    session.global_last_seq = session.global_last_seq.max(catch_up.to_seq);
                 });
                 anyhow::Ok(())
             })?;
@@ -628,6 +731,15 @@ pub async fn connect_external_agent(
         .collect();
     connection.load_session = response.load_session;
     connection.resume_session = response.resume_session;
+    let last_seq = cx.update(|cx| connection.session.read(cx).global_last_seq);
+    let catch_up = cx
+        .update(|cx| connection.subscribe(last_seq, cx))
+        .await?;
+    cx.update(|cx| {
+        connection.session.update(cx, |session, _| {
+            session.global_last_seq = session.global_last_seq.max(catch_up.to_seq);
+        });
+    });
     Ok(Rc::new(connection) as _)
 }
 
@@ -661,6 +773,166 @@ fn catch_up_from_proto(catch_up: &proto::SessionCatchUp) -> CatchUpResponse {
         from_seq: EventSeq(catch_up.from_seq),
         to_seq: EventSeq(catch_up.to_seq),
         events_json: catch_up.events_json.clone(),
+    }
+}
+
+struct RemoteAgentSessionList {
+    connection: RemoteAgentConnection,
+}
+
+impl AgentSessionList for RemoteAgentSessionList {
+    fn list_sessions(
+        &self,
+        _request: AgentSessionListRequest,
+        cx: &mut App,
+    ) -> Task<Result<AgentSessionListResponse>> {
+        let task = self
+            .connection
+            .rpc::<SessionListWire>(methods::SESSION_LIST, serde_json::json!({}), cx);
+        cx.spawn(async move |_| {
+            let wire = task.await?;
+            Ok(AgentSessionListResponse::new(
+                wire.sessions.into_iter().map(session_info_from_wire).collect(),
+            ))
+        })
+    }
+
+    fn supports_delete(&self) -> bool {
+        true
+    }
+
+    fn delete_session(&self, session_id: &acp::SessionId, cx: &mut App) -> Task<Result<()>> {
+        let task = self.connection.rpc::<serde_json::Value>(
+            methods::SESSION_DELETE,
+            DeleteSessionRequest {
+                session_id: session_id.to_string(),
+            },
+            cx,
+        );
+        cx.spawn(async move |_| {
+            task.await?;
+            Ok(())
+        })
+    }
+
+    fn delete_sessions(&self, cx: &mut App) -> Task<Result<()>> {
+        let task = self.connection.rpc::<serde_json::Value>(
+            methods::SESSION_DELETE_ALL,
+            serde_json::json!({}),
+            cx,
+        );
+        cx.spawn(async move |_| {
+            task.await?;
+            Ok(())
+        })
+    }
+
+    fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
+        self
+    }
+}
+
+struct RemoteAgentModelSelector {
+    connection: RemoteAgentConnection,
+    session_id: acp::SessionId,
+}
+
+impl AgentModelSelector for RemoteAgentModelSelector {
+    fn list_models(&self, cx: &mut App) -> Task<Result<AgentModelList>> {
+        let task = self.connection.rpc::<ModelListWire>(
+            methods::LIST_MODELS,
+            SessionModelRequest {
+                session_id: self.session_id.to_string(),
+                model_id: None,
+            },
+            cx,
+        );
+        cx.spawn(async move |_| Ok(model_list_from_wire(task.await?)))
+    }
+
+    fn select_model(&self, model_id: AgentModelId, cx: &mut App) -> Task<Result<()>> {
+        let task = self.connection.rpc::<serde_json::Value>(
+            methods::SELECT_MODEL,
+            SessionModelRequest {
+                session_id: self.session_id.to_string(),
+                model_id: Some(model_id.to_string()),
+            },
+            cx,
+        );
+        cx.spawn(async move |_| {
+            task.await?;
+            Ok(())
+        })
+    }
+
+    fn selected_model(&self, cx: &mut App) -> Task<Result<AgentModelInfo>> {
+        let task = self.connection.rpc::<session_protocol::ModelInfoWire>(
+            methods::SELECTED_MODEL,
+            SessionModelRequest {
+                session_id: self.session_id.to_string(),
+                model_id: None,
+            },
+            cx,
+        );
+        cx.spawn(async move |_| Ok(model_info_from_wire(task.await?, None)))
+    }
+
+    fn should_render_footer(&self) -> bool {
+        true
+    }
+}
+
+fn session_info_from_wire(wire: session_protocol::SessionInfoWire) -> AgentSessionInfo {
+    let mut info = AgentSessionInfo::new(acp::SessionId::new(wire.session_id));
+    info.title = wire.title.map(SharedString::from);
+    if !wire.work_dirs.is_empty() {
+        let paths: Vec<PathBuf> = wire.work_dirs.into_iter().map(PathBuf::from).collect();
+        info.work_dirs = Some(PathList::new(&paths));
+    }
+    if let Some(updated_at) = wire.updated_at
+        && let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&updated_at)
+    {
+        info.updated_at = Some(parsed.with_timezone(&chrono::Utc));
+    }
+    info
+}
+
+fn model_list_from_wire(wire: ModelListWire) -> AgentModelList {
+    if wire.models.iter().any(|model| model.group.is_some()) {
+        let mut groups: IndexMap<acp_thread::AgentModelGroupName, Vec<AgentModelInfo>> =
+            IndexMap::default();
+        for model in wire.models {
+            let group = acp_thread::AgentModelGroupName(SharedString::from(
+                model.group.clone().unwrap_or_default(),
+            ));
+            groups
+                .entry(group)
+                .or_default()
+                .push(model_info_from_wire(model, None));
+        }
+        AgentModelList::Grouped(groups)
+    } else {
+        AgentModelList::Flat(
+            wire.models
+                .into_iter()
+                .map(|model| model_info_from_wire(model, None))
+                .collect(),
+        )
+    }
+}
+
+fn model_info_from_wire(
+    wire: session_protocol::ModelInfoWire,
+    _group: Option<String>,
+) -> AgentModelInfo {
+    AgentModelInfo {
+        id: AgentModelId::new(wire.id.as_str()),
+        name: wire.name.into(),
+        description: wire.description.map(SharedString::from),
+        icon: None,
+        is_latest: false,
+        cost: None,
+        disabled: None,
     }
 }
 

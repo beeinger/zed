@@ -22,6 +22,21 @@ The mission:
 - External ACP children (Gemini, Claude, …) are spawned on the daemon. The GUI
   only tunnels ACP. Closing the window does not SIGHUP the child; reconnect
   uses `session/load` or `session/resume`.
+- Native Zed Agent on a remote (or local-daemon) project uses
+  `RemoteAgentConnection`. The GUI never constructs in-process `NativeAgent`
+  for those projects.
+- Production folder open uses the local unix-socket daemon. Tests keep
+  `Project::local`.
+- Dirty buffers stay on the daemon after the GUI closes its replica, and are
+  snapshotted under the server state dir.
+- The remote Envelope stream is zstd-compressed (legacy uncompressed frames
+  still decode). Agent token deltas coalesce (~50ms / 64 chars). Heartbeats
+  adapt to RTT and honor `SessionHeartbeat` tunables.
+- LLM API keys pasted in the GUI are forwarded to the daemon credential file.
+- Zed cloud tokens on the laptop are copied into that same file when a remote
+  agent hub is created, so daemon LLM HTTP can authenticate.
+- `remote_server serve --identifier` is the systemd/launchd-friendly entry
+  (same sockets as `run`). See `overlay/systemd` and `overlay/launchd`.
 
 ## Crates
 

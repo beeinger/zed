@@ -50,15 +50,20 @@ APPLIED detached-prompt-advice crates/zed/src/zed.rs
 APPLIED detached-prompt-advice crates/zed/Cargo.toml
 APPLIED detach-external-acp crates/agent_servers/src/acp.rs
 APPLIED detach-external-acp crates/agent_servers/Cargo.toml
+APPLIED remote-native-agent crates/agent_ui/src/agent_ui.rs
+APPLIED remote-native-agent crates/agent_ui/Cargo.toml
+APPLIED local-daemon-default crates/workspace/src/workspace.rs
+APPLIED local-daemon-default crates/workspace/src/multi_workspace.rs
+APPLIED local-daemon-default crates/zed/src/zed.rs
+APPLIED server-buffer-authority crates/project/src/buffer_store.rs
+APPLIED zstd-remote crates/remote/src/protocol.rs
+APPLIED zstd-remote crates/remote/Cargo.toml
+APPLIED daemon-credentials crates/language_model/src/api_key.rs
+APPLIED daemon-credentials crates/language_model/src/language_model.rs
+APPLIED daemon-service crates/remote_server/src/server.rs
+APPLIED daemon-service crates/remote_server/src/main.rs
 
 ## Planned (not yet in tree)
 
-These ids will be added in later commits. They are documented so merges and
-reviews share one vocabulary.
-
-| id | file | function / site | intent |
-| --- | --- | --- | --- |
-| remote-native-agent | `crates/agent_ui/src/agent_ui.rs` | `Agent::server` | `RemoteAgentConnection` when via remote server |
-| server-buffer-authority | `crates/project/src/buffer_store.rs` | `handle_close_buffer` | Client close does not drop agent-held buffers |
-| zstd-remote | `crates/remote/src/protocol.rs` | `read_message` / `write_message` | Compress remote Envelope stream |
+None. The overlay mission is implemented.
 

@@ -17,7 +17,11 @@ use std::sync::Arc;
 
 pub type CreateProviderSettingsView = Arc<dyn Fn(&mut Window, &mut App) -> AnyView + 'static>;
 
-pub use crate::api_key::{ApiKey, ApiKeyState};
+// FORK:daemon-credentials
+pub use crate::api_key::{
+    ApiKey, ApiKeyState, replay_forwarded_credentials, set_credential_forwarder,
+};
+// FORK:end
 pub use crate::registry::*;
 pub use crate::request::{LanguageModelImageExt, gpui_size_to_image_size, image_size_to_gpui};
 pub use env_var::{EnvVar, env_var};
