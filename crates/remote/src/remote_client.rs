@@ -340,6 +340,11 @@ pub struct RemoteClient {
     platform: RemotePlatform,
     os_version: Option<String>,
     state: Option<State>,
+    // FORK:loose-heartbeat
+    heartbeat_interval: Duration,
+    heartbeat_timeout: Duration,
+    max_missed_heartbeats: usize,
+    // FORK:end
 }
 
 #[derive(Debug)]
@@ -466,6 +471,9 @@ impl RemoteClient {
                     platform,
                     os_version: os_version.clone(),
                     state: Some(State::Connecting),
+                    heartbeat_interval: HEARTBEAT_INTERVAL,
+                    heartbeat_timeout: HEARTBEAT_TIMEOUT,
+                    max_missed_heartbeats: MAX_MISSED_HEARTBEATS,
                 });
 
                 let io_task = remote_connection.start_proxy(
@@ -517,10 +525,37 @@ impl RemoteClient {
                     }
                 }
                 let multiplex_task = Self::monitor(this.downgrade(), io_task, cx);
+                let ping_started = Instant::now();
                 if let Err(error) = client.ping(HEARTBEAT_TIMEOUT).await {
                     log::error!("failed to establish connection: {}", error);
                     return Err(error);
                 }
+                let rtt = ping_started.elapsed();
+                // FORK:loose-heartbeat
+                this.update(cx, |this, _| this.adapt_heartbeat_from_rtt(rtt));
+                let (interval_ms, timeout_ms, max_missed) = this.read_with(cx, |this, _| {
+                    (
+                        this.heartbeat_interval.as_millis() as u32,
+                        this.heartbeat_timeout.as_millis() as u32,
+                        this.max_missed_heartbeats as u32,
+                    )
+                });
+                match client
+                    .request(proto::SessionHeartbeat {
+                        interval_ms,
+                        timeout_ms,
+                        max_missed,
+                    })
+                    .await
+                {
+                    Ok(config) => {
+                        this.update(cx, |this, _| this.apply_session_heartbeat(&config));
+                    }
+                    Err(error) => {
+                        log::debug!("SessionHeartbeat not advertised by daemon: {error:#}");
+                    }
+                }
+                // FORK:end
 
                 let heartbeat_task = Self::heartbeat(this.downgrade(), connection_activity_rx, cx);
 
@@ -810,10 +845,18 @@ impl RemoteClient {
         cx.spawn(async move |cx| {
             let mut missed_heartbeats = 0;
 
-            let keepalive_timer = cx.background_executor().timer(HEARTBEAT_INTERVAL).fuse();
+            let interval = this
+                .read_with(cx, |this, _| this.heartbeat_interval)
+                .unwrap_or(HEARTBEAT_INTERVAL);
+            let keepalive_timer = cx.background_executor().timer(interval).fuse();
             futures::pin_mut!(keepalive_timer);
 
             loop {
+                let (timeout, max_missed) = this
+                    .read_with(cx, |this, _| {
+                        (this.heartbeat_timeout, this.max_missed_heartbeats)
+                    })
+                    .unwrap_or((HEARTBEAT_TIMEOUT, MAX_MISSED_HEARTBEATS));
                 select_biased! {
                     result = connection_activity_rx.next().fuse() => {
                         if result.is_none() {
@@ -835,7 +878,7 @@ impl RemoteClient {
                             _ = connection_activity_rx.next().fuse() => {
                                 Ok(())
                             }
-                            ping_result = client.ping(HEARTBEAT_TIMEOUT).fuse() => {
+                            ping_result = client.ping(timeout).fuse() => {
                                 ping_result
                             }
                         };
@@ -844,13 +887,17 @@ impl RemoteClient {
                             missed_heartbeats += 1;
                             log::warn!(
                                 "No heartbeat from server after {:?}. Missed heartbeat {} out of {}.",
-                                HEARTBEAT_TIMEOUT,
+                                timeout,
                                 missed_heartbeats,
-                                MAX_MISSED_HEARTBEATS
+                                max_missed
                             );
                         } else if missed_heartbeats != 0 {
                             missed_heartbeats = 0;
                         } else {
+                            let next = this
+                                .read_with(cx, |this, _| this.heartbeat_interval)
+                                .unwrap_or(HEARTBEAT_INTERVAL);
+                            keepalive_timer.set(cx.background_executor().timer(next).fuse());
                             continue;
                         }
 
@@ -863,7 +910,10 @@ impl RemoteClient {
                     }
                 }
 
-                keepalive_timer.set(cx.background_executor().timer(HEARTBEAT_INTERVAL).fuse());
+                let next = this
+                    .read_with(cx, |this, _| this.heartbeat_interval)
+                    .unwrap_or(HEARTBEAT_INTERVAL);
+                keepalive_timer.set(cx.background_executor().timer(next).fuse());
             }
         })
     }
@@ -882,7 +932,7 @@ impl RemoteClient {
 
         self.set_state(next_state, cx);
 
-        if missed_heartbeats >= MAX_MISSED_HEARTBEATS {
+        if missed_heartbeats >= self.max_missed_heartbeats {
             log::error!(
                 "Missed last {} heartbeats. Reconnecting...",
                 missed_heartbeats
@@ -895,6 +945,38 @@ impl RemoteClient {
         } else {
             ControlFlow::Continue(())
         }
+    }
+
+    fn adapt_heartbeat_from_rtt(&mut self, rtt: Duration) {
+        let interval = (rtt * 3)
+            .max(HEARTBEAT_INTERVAL)
+            .min(Duration::from_secs(60));
+        let timeout = (rtt * 4)
+            .max(HEARTBEAT_TIMEOUT)
+            .min(Duration::from_secs(90));
+        self.heartbeat_interval = interval;
+        self.heartbeat_timeout = timeout;
+        log::info!(
+            "adaptive heartbeat: rtt={rtt:?} interval={interval:?} timeout={timeout:?}"
+        );
+    }
+
+    fn apply_session_heartbeat(&mut self, config: &proto::SessionHeartbeat) {
+        if config.interval_ms > 0 {
+            self.heartbeat_interval = Duration::from_millis(config.interval_ms as u64);
+        }
+        if config.timeout_ms > 0 {
+            self.heartbeat_timeout = Duration::from_millis(config.timeout_ms as u64);
+        }
+        if config.max_missed > 0 {
+            self.max_missed_heartbeats = config.max_missed as usize;
+        }
+        log::info!(
+            "daemon heartbeat tunables: interval={:?} timeout={:?} max_missed={}",
+            self.heartbeat_interval,
+            self.heartbeat_timeout,
+            self.max_missed_heartbeats
+        );
     }
 
     fn monitor(

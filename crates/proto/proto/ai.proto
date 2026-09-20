@@ -88,4 +88,10 @@ message SessionCatchUp {
   uint64 to_seq = 2;
   repeated string events_json = 3;
 }
+
+message SessionHeartbeat {
+  uint32 interval_ms = 1;
+  uint32 timeout_ms = 2;
+  uint32 max_missed = 3;
+}
 // FORK:end

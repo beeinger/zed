@@ -527,6 +527,7 @@ message Envelope {
     SessionAgentRpc session_agent_rpc = 2000;
     SessionSubscribe session_subscribe = 2001;
     SessionCatchUp session_catch_up = 2002;
+    SessionHeartbeat session_heartbeat = 2003;
     // FORK:end
   }
 

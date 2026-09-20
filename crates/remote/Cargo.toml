@@ -39,6 +39,9 @@ serde_json.workspace = true
 # FORK:stable-id
 session_protocol.workspace = true
 # FORK:end
+# FORK:zstd-remote
+zstd.workspace = true
+# FORK:end
 settings.workspace = true
 smol.workspace = true
 telemetry.workspace = true

@@ -435,6 +435,7 @@ messages!(
     (SessionAgentRpc, Background),
     (SessionSubscribe, Background),
     (SessionCatchUp, Background),
+    (SessionHeartbeat, Background),
     // FORK:end
 );
 
@@ -679,6 +680,7 @@ request_messages!(
     // FORK:acp-envelope
     (SessionAgentRpc, SessionAgentRpc),
     (SessionSubscribe, SessionCatchUp),
+    (SessionHeartbeat, SessionHeartbeat),
     // FORK:end
 );
 
