@@ -96,6 +96,9 @@ search.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_json_lenient.workspace = true
+# FORK:remote-native-agent
+session_client.workspace = true
+# FORK:end
 settings.workspace = true
 streaming_diff.workspace = true
 task.workspace = true

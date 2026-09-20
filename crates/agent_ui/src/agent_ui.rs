@@ -58,7 +58,7 @@ use language::{
 use language_model::{
     ConfiguredModel, LanguageModelId, LanguageModelProviderId, LanguageModelRegistry,
 };
-use project::{AgentId, DisableAiSettings};
+use project::{AgentId, DisableAiSettings, Project};
 use prompt_store::{self, PromptBuilder, rules_to_skills_migration};
 use rope::Point;
 use schemars::JsonSchema;
@@ -484,15 +484,54 @@ impl Agent {
         &self,
         fs: Arc<dyn fs::Fs>,
         thread_store: Entity<agent::ThreadStore>,
+        project: &Entity<Project>,
+        cx: &App,
     ) -> Rc<dyn agent_servers::AgentServer> {
         match self {
-            Self::NativeAgent => Rc::new(agent::NativeAgentServer::new(fs, thread_store)),
+            Self::NativeAgent => {
+                // FORK:remote-native-agent
+                if project.read(cx).is_via_remote_server() {
+                    return Rc::new(RemoteNativeAgentServer);
+                }
+                // FORK:end
+                Rc::new(agent::NativeAgentServer::new(fs, thread_store))
+            }
             Self::Custom { id: name } => {
                 Rc::new(agent_servers::CustomAgentServer::new(name.clone()))
             }
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => Rc::new(crate::test_support::StubAgentServer::default_response()),
         }
+    }
+}
+
+/// GUI-side `AgentServer` for the native Zed Agent when the project is a
+/// daemon facade. `NativeAgent` lives on the server; this only tunnels ACP.
+struct RemoteNativeAgentServer;
+
+impl agent_servers::AgentServer for RemoteNativeAgentServer {
+    fn logo(&self) -> IconName {
+        IconName::ZedAgent
+    }
+
+    fn agent_id(&self) -> AgentId {
+        agent::ZED_AGENT_ID.clone()
+    }
+
+    fn connect(
+        &self,
+        _delegate: agent_servers::AgentServerDelegate,
+        project: Entity<Project>,
+        cx: &mut App,
+    ) -> gpui::Task<anyhow::Result<Rc<dyn acp_thread::AgentConnection>>> {
+        gpui::Task::ready(
+            session_client::RemoteAgentConnection::for_project(&project, cx)
+                .map(|connection| connection as Rc<dyn acp_thread::AgentConnection>),
+        )
+    }
+
+    fn into_any(self: Rc<Self>) -> Rc<dyn std::any::Any> {
+        self
     }
 }
 

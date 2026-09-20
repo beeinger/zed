@@ -2991,7 +2991,7 @@ impl AgentPanel {
         self.connection_store.update(cx, |store, cx| {
             store.request_connection(
                 Agent::NativeAgent,
-                Agent::NativeAgent.server(fs, thread_store),
+                Agent::NativeAgent.server(fs, thread_store, &self.project, cx),
                 cx,
             );
         });
@@ -4616,8 +4616,14 @@ impl AgentPanel {
 
         self.set_selected_agent_and_persist(agent.clone(), cx);
 
-        let server = server_override
-            .unwrap_or_else(|| agent.server(self.fs.clone(), self.thread_store.clone()));
+        let server = server_override.unwrap_or_else(|| {
+            agent.server(
+                self.fs.clone(),
+                self.thread_store.clone(),
+                &self.project,
+                cx,
+            )
+        });
         let thread_store = server
             .clone()
             .downcast::<agent::NativeAgentServer>()
