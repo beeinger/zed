@@ -14,12 +14,20 @@ The mission:
 - Reconnect is subscribe + catch-up, not a new session.
 - Local and remote use the same architecture (unix socket vs SSH).
 - Upstream merges stay mechanical: overlay crates plus tiny `FORK:` hooks.
+- Permission and elicitation prompts are asked of the GUI. A missing window
+  waits forever (default) or until `agent.disconnected_prompt_wait` times out:
+  permission timeout cancels the turn; elicitation timeout continues without
+  the form. Unattended remote work should set `agent.detached_permissions` to
+  `"permit_everything"` or a thorough `agent.tool_permissions` allow-list.
+- External ACP children (Gemini, Claude, …) are spawned on the daemon. The GUI
+  only tunnels ACP. Closing the window does not SIGHUP the child; reconnect
+  uses `session/load` or `session/resume`.
 
 ## Crates
 
 | Crate | Role |
 | --- | --- |
-| `session_protocol` | Daemon ids, event sequence, disconnected permission policy, ACP-in-Envelope codec |
+| `session_protocol` | Daemon ids, event sequence, disconnected prompt policy, ACP-in-Envelope codec |
 | `session_host` | Native agent + LLM + event log inside `HeadlessProject` |
 | `session_client` | `RemoteAgentConnection` and the production “open as daemon” helper |
 | `session_transport` | Local unix-socket `RemoteConnection` (no SSH) |

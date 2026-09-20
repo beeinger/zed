@@ -403,6 +403,7 @@ dependencies = [
  "reqwest_client",
  "serde",
  "serde_json",
+ "session_client",
  "settings",
  "task",
  "tempfile",
@@ -16662,6 +16663,7 @@ dependencies = [
  "acp_thread",
  "agent",
  "agent-client-protocol",
+ "agent_servers",
  "anyhow",
  "client",
  "clock",
@@ -16681,7 +16683,9 @@ dependencies = [
  "serde",
  "serde_json",
  "session_protocol",
+ "settings",
  "util",
+ "watch",
 ]
 
 [[package]]
@@ -23058,6 +23062,7 @@ dependencies = [
  "serde",
  "serde_json",
  "session",
+ "session_protocol",
  "session_transport",
  "settings",
  "settings_profile_selector",

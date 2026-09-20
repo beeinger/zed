@@ -75,6 +75,8 @@ message SessionAgentRpc {
   string json = 1;
   // EventLog seq when this carries a persisted session/update; 0 for RPC.
   uint64 seq = 2;
+  // Empty = native Zed Agent. Non-empty selects a daemon-held external ACP child.
+  string agent_id = 3;
 }
 
 message SessionSubscribe {

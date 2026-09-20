@@ -56,6 +56,9 @@ tempfile.workspace = true
 thiserror.workspace = true
 ui.workspace = true
 terminal.workspace = true
+# FORK:detach-external-acp
+session_client.workspace = true
+# FORK:end
 uuid.workspace = true
 util.workspace = true
 watch.workspace = true

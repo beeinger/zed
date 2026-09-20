@@ -195,6 +195,9 @@ session.workspace = true
 # FORK:local-transport
 session_transport.workspace = true
 # FORK:end
+# FORK:detached-prompt-advice
+session_protocol.workspace = true
+# FORK:end
 settings.workspace = true
 settings_profile_selector.workspace = true
 settings_ui.workspace = true

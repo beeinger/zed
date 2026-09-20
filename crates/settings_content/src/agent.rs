@@ -385,6 +385,27 @@ pub struct AgentSettingsContent {
     /// These are populated when choosing "Allow always" from a sandbox
     /// escalation prompt.
     pub sandbox_permissions: Option<SandboxPermissionsContent>,
+
+    // FORK:detached-prompts
+    /// How the daemon waits for permission and elicitation when no GUI is
+    /// attached. `"forever"` waits until a client reconnects and answers.
+    /// `"timeout"` then cancels the turn for permissions, or continues without
+    /// the form for elicitation.
+    ///
+    /// Default: forever
+    pub disconnected_prompt_wait: Option<DisconnectedPromptWaitContent>,
+    /// Milliseconds to wait when `disconnected_prompt_wait` is `"timeout"`.
+    ///
+    /// Default: 300000 (five minutes)
+    pub disconnected_prompt_timeout_ms: Option<u64>,
+    /// `"ask"` sends permission prompts to the GUI (default).
+    /// `"permit_everything"` auto-allows tool permissions so unattended remote
+    /// work can proceed. Elicitation is still asked. Prefer this or a thorough
+    /// `tool_permissions` allow-list for detached agent turns.
+    ///
+    /// Default: ask
+    pub detached_permissions: Option<DetachedPermissionsContent>,
+    // FORK:end
 }
 
 impl AgentSettingsContent {
@@ -1064,6 +1085,58 @@ pub enum ToolPermissionMode {
     #[default]
     Confirm,
 }
+
+// FORK:detached-prompts
+/// How the daemon waits for a GUI answer to permission and elicitation prompts.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DisconnectedPromptWaitContent {
+    /// Wait until a client reconnects and answers.
+    #[default]
+    Forever,
+    /// Wait `disconnected_prompt_timeout_ms`, then cancel the turn (permissions)
+    /// or continue without the form (elicitation).
+    Timeout,
+}
+
+/// Whether the daemon auto-allows tool permissions while the GUI may be gone.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DetachedPermissionsContent {
+    /// Send permission prompts to the GUI, or wait for one to connect.
+    #[default]
+    Ask,
+    /// Auto-allow every tool permission (permit everything). Elicitation is
+    /// still asked.
+    PermitEverything,
+}
+// FORK:end
 
 impl std::fmt::Display for ToolPermissionMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

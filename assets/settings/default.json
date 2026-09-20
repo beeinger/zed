@@ -1245,6 +1245,20 @@
         // },
       },
     },
+    // FORK:detached-prompts
+    // How the daemon waits for permission and elicitation when no GUI is
+    // attached. "forever" waits until a client reconnects and answers.
+    // "timeout" then cancels the turn for permissions, or continues without
+    // the form for elicitation.
+    "disconnected_prompt_wait": "forever",
+    // Milliseconds to wait when disconnected_prompt_wait is "timeout".
+    "disconnected_prompt_timeout_ms": 300000,
+    // "ask" sends permission prompts to the GUI (default).
+    // "permit_everything" auto-allows tool permissions for unattended remote
+    // work. Elicitation is still asked. Prefer this or a thorough
+    // tool_permissions allow-list for detached agent turns.
+    "detached_permissions": "ask",
+    // FORK:end
     // When enabled, agent edits will be displayed in single-file editors for review
     "single_file_review": false,
     // Settings for automatic agent context compaction, which summarizes earlier

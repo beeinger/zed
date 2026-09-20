@@ -19,8 +19,8 @@ use agent_client_protocol::schema::{
 use anyhow::{Context as _, Result, anyhow};
 use gpui::{AsyncApp, Entity};
 use session_protocol::{
-    INTERNAL_ERROR, INVALID_PARAMS, JsonRpcMessage, METHOD_NOT_FOUND, error_response, methods,
-    success,
+    INTERNAL_ERROR, INVALID_PARAMS, JsonRpcMessage, METHOD_NOT_FOUND, error_response,
+    is_native_agent_id, methods, success,
 };
 use util::path_list::PathList;
 
@@ -30,6 +30,7 @@ impl SessionHost {
     pub(crate) async fn handle_json_rpc(
         this: Entity<Self>,
         json: String,
+        agent_id: String,
         cx: &mut AsyncApp,
     ) -> String {
         let incoming = match JsonRpcMessage::parse(&json) {
@@ -38,6 +39,10 @@ impl SessionHost {
                 return error_response(None, session_protocol::PARSE_ERROR, error.to_string());
             }
         };
+
+        if incoming.method_name() == Some(methods::ACP_CONNECT) || !is_native_agent_id(&agent_id) {
+            return Self::handle_external_json_rpc(this, agent_id, incoming, cx).await;
+        }
 
         let id = incoming.id.clone();
         let Some(method) = incoming.method_name().map(str::to_string) else {

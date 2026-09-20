@@ -17,6 +17,7 @@ doctest = false
 acp_thread.workspace = true
 agent.workspace = true
 agent-client-protocol.workspace = true
+agent_servers.workspace = true
 anyhow.workspace = true
 client.workspace = true
 clock.workspace = true
@@ -36,4 +37,6 @@ rpc = { workspace = true, features = ["gpui"] }
 serde.workspace = true
 serde_json.workspace = true
 session_protocol.workspace = true
+settings.workspace = true
 util.workspace = true
+watch.workspace = true

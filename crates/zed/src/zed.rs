@@ -71,10 +71,11 @@ use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
 use rope::Rope;
 use search::project_search::ProjectSearchBar;
 use settings::{
-    BaseKeymap, DEFAULT_KEYMAP_PATH, DefaultOpenBehavior, InvalidSettingsError, KeybindSource,
-    KeymapFile, KeymapFileLoadResult, MigrationStatus, SPECIFIC_OVERRIDES_KEYMAP_PATH, Settings,
-    SettingsFile, SettingsStore, VIM_KEYMAP_PATH, initial_local_debug_tasks_content,
-    initial_project_settings_content, initial_tasks_content, update_settings_file,
+    BaseKeymap, DEFAULT_KEYMAP_PATH, DefaultOpenBehavior, DetachedPermissionsContent,
+    InvalidSettingsError, KeybindSource, KeymapFile, KeymapFileLoadResult, MigrationStatus,
+    SPECIFIC_OVERRIDES_KEYMAP_PATH, Settings, SettingsFile, SettingsStore, ToolPermissionMode,
+    VIM_KEYMAP_PATH, initial_local_debug_tasks_content, initial_project_settings_content,
+    initial_tasks_content, update_settings_file,
 };
 use sidebar::Sidebar;
 #[cfg(debug_assertions)]
@@ -425,6 +426,29 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
     }
 }
 
+// FORK:detached-prompt-advice
+fn should_advise_detached_work(cx: &App) -> bool {
+    let Some(store) = cx.try_global::<SettingsStore>() else {
+        return true;
+    };
+    let Some(agent) = store.merged_settings().agent.as_ref() else {
+        return true;
+    };
+    if agent.detached_permissions == Some(DetachedPermissionsContent::PermitEverything) {
+        return false;
+    }
+    if agent
+        .tool_permissions
+        .as_ref()
+        .and_then(|permissions| permissions.default)
+        == Some(ToolPermissionMode::Allow)
+    {
+        return false;
+    }
+    true
+}
+// FORK:end
+
 pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
     let mut _on_close_subscription = bind_on_window_closed(cx);
     cx.observe_global::<SettingsStore>(move |cx| {
@@ -551,6 +575,21 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         let Some(window) = window else {
             return;
         };
+
+        // FORK:detached-prompt-advice
+        if workspace.project().read(cx).is_via_remote_server() && should_advise_detached_work(cx) {
+            workspace.show_toast(
+                Toast::new(
+                    NotificationId::named("session-host-detached-work".into()),
+                    session_protocol::DETACHED_WORK_ADVICE,
+                )
+                .on_click("Open server settings", |window, cx| {
+                    window.dispatch_action(OpenServerSettings.boxed_clone(), cx);
+                }),
+                cx,
+            );
+        }
+        // FORK:end
 
         let workspace_handle = cx.entity();
         let center_pane = workspace.active_pane().clone();

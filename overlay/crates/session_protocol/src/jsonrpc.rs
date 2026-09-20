@@ -14,7 +14,12 @@ pub mod methods {
     pub const SESSION_LOAD: &str = "session/load";
     pub const SESSION_PROMPT: &str = "session/prompt";
     pub const SESSION_CANCEL: &str = "session/cancel";
+    pub const SESSION_RESUME: &str = "session/resume";
     pub const SESSION_UPDATE: &str = "session/update";
+    pub const SESSION_REQUEST_PERMISSION: &str = "session/request_permission";
+    pub const ELICITATION_CREATE: &str = "elicitation/create";
+    /// Spawn or reuse a daemon-held external ACP child. Not an upstream ACP method.
+    pub const ACP_CONNECT: &str = "zed/acp_connect";
 }
 
 /// Wire object carried in `SessionAgentRpc.json`.
@@ -217,5 +222,16 @@ mod tests {
         let params = parsed.params.unwrap();
         assert_eq!(params["sessionId"], "abc");
         assert_eq!(params["update"]["sessionUpdate"], "agent_message_chunk");
+    }
+
+    #[test]
+    fn permission_and_elicitation_method_names_match_acp() {
+        assert_eq!(
+            methods::SESSION_REQUEST_PERMISSION,
+            "session/request_permission"
+        );
+        assert_eq!(methods::ELICITATION_CREATE, "elicitation/create");
+        assert_eq!(methods::ACP_CONNECT, "zed/acp_connect");
+        assert_eq!(methods::SESSION_RESUME, "session/resume");
     }
 }

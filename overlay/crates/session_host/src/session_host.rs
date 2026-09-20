@@ -5,6 +5,8 @@
 //! back to the GUI.
 
 mod acp_rpc;
+mod external_acp;
+mod gui_prompts;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -23,18 +25,90 @@ use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
 use project::{HeadlessProjectStores, Project};
 use rpc::{AnyProtoClient, TypedEnvelope, proto};
-use session_protocol::{DisconnectedPermissionPolicy, EventLog, EventSeq, methods, notification};
+use session_protocol::{
+    DEFAULT_PROMPT_TIMEOUT_MS, DetachedPermissions, DisconnectedPromptWait, EventLog, EventSeq,
+    methods, notification,
+};
+use settings::{
+    DetachedPermissionsContent, DisconnectedPromptWaitContent, Settings, SettingsContent,
+    SettingsStore,
+};
+
+use crate::external_acp::ExternalAgent;
+use crate::gui_prompts::HostPromptHandler;
 
 /// How the daemon behaves with no attached GUI.
 #[derive(Clone, Copy, Debug)]
 pub struct HostConfig {
-    pub disconnected_permissions: DisconnectedPermissionPolicy,
+    pub detached_permissions: DetachedPermissions,
+    pub disconnected_prompt_wait: DisconnectedPromptWait,
 }
 
 impl Default for HostConfig {
     fn default() -> Self {
         Self {
-            disconnected_permissions: DisconnectedPermissionPolicy::AllowAccordingToTrust,
+            detached_permissions: DetachedPermissions::Ask,
+            disconnected_prompt_wait: DisconnectedPromptWait::Forever,
+        }
+    }
+}
+
+impl HostConfig {
+    fn from_app(cx: &App) -> Self {
+        SessionHostSettings::try_get(cx)
+            .copied()
+            .map(Self::from)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn permit_tool_permissions(self) -> bool {
+        matches!(
+            self.detached_permissions,
+            DetachedPermissions::PermitEverything
+        )
+    }
+}
+
+impl From<SessionHostSettings> for HostConfig {
+    fn from(settings: SessionHostSettings) -> Self {
+        Self {
+            detached_permissions: settings.detached_permissions,
+            disconnected_prompt_wait: settings.disconnected_prompt_wait,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SessionHostSettings {
+    detached_permissions: DetachedPermissions,
+    disconnected_prompt_wait: DisconnectedPromptWait,
+}
+
+impl Settings for SessionHostSettings {
+    fn from_settings(content: &SettingsContent) -> Self {
+        let agent = content.agent.as_ref();
+        let wait = agent
+            .and_then(|agent| agent.disconnected_prompt_wait)
+            .unwrap_or(DisconnectedPromptWaitContent::Forever);
+        let timeout_ms = agent
+            .and_then(|agent| agent.disconnected_prompt_timeout_ms)
+            .unwrap_or(DEFAULT_PROMPT_TIMEOUT_MS);
+        Self {
+            detached_permissions: match agent
+                .and_then(|agent| agent.detached_permissions)
+                .unwrap_or(DetachedPermissionsContent::Ask)
+            {
+                DetachedPermissionsContent::Ask => DetachedPermissions::Ask,
+                DetachedPermissionsContent::PermitEverything => {
+                    DetachedPermissions::PermitEverything
+                }
+            },
+            disconnected_prompt_wait: match wait {
+                DisconnectedPromptWaitContent::Forever => DisconnectedPromptWait::Forever,
+                DisconnectedPromptWaitContent::Timeout => {
+                    DisconnectedPromptWait::Timeout { millis: timeout_ms }
+                }
+            },
         }
     }
 }
@@ -59,6 +133,12 @@ pub struct SessionHost {
     log: EventLog,
     /// Strong handles so `observe_release` does not drop NativeAgent sessions.
     daemon_threads: HashMap<acp::SessionId, Entity<AcpThread>>,
+    pub(crate) external_agents: HashMap<String, ExternalAgent>,
+    gui_attached_tx: watch::Sender<u64>,
+    /// Kept so `gui_attached_tx.send` always has a receiver.
+    _gui_attached_rx: watch::Receiver<u64>,
+    gui_generation: u64,
+    next_rpc_id: i64,
 }
 
 struct GlobalSessionHost(Entity<SessionHost>);
@@ -78,6 +158,9 @@ impl SessionHost {
     fn start(init: SessionHostInit, cx: &mut App) -> Result<Entity<Self>> {
         language_model::init(cx);
         gpui_tokio::init(cx);
+        if cx.has_global::<SettingsStore>() {
+            SessionHostSettings::register(cx);
+        }
         cx.set_global(acp_thread::HeadlessTerminal(true));
 
         let http = Arc::new(HttpClientWithUrl::new(
@@ -101,28 +184,34 @@ impl SessionHost {
         );
         let thread_store = cx.new(|cx| ThreadStore::new(cx));
         let agent = NativeAgent::new(thread_store, Templates::new(), init.fs, cx);
+        let (gui_attached_tx, gui_attached_rx) = watch::channel(0);
+        let config = HostConfig::from_app(cx);
 
         let host = cx.new(|_| Self {
             project,
             agent,
-            config: HostConfig::default(),
+            config,
             session: init.session.clone(),
             log: EventLog::new(),
             daemon_threads: HashMap::new(),
+            external_agents: HashMap::new(),
+            gui_attached_tx,
+            _gui_attached_rx: gui_attached_rx,
+            gui_generation: 0,
+            next_rpc_id: 0,
         });
 
         host.update(cx, |host, cx| {
             let weak_host = cx.weak_entity();
-            let auto_resolve = match host.config.disconnected_permissions {
-                DisconnectedPermissionPolicy::AllowAccordingToTrust => Some(true),
-                DisconnectedPermissionPolicy::Deny => Some(false),
-                DisconnectedPermissionPolicy::Queue => None,
-            };
+            let permit = host.config.permit_tool_permissions();
             host.agent.update(cx, |agent, _cx| {
-                agent.set_auto_resolve_permissions(auto_resolve);
+                agent.set_daemon_prompt_handler(
+                    Rc::new(HostPromptHandler(weak_host.clone())),
+                    permit,
+                );
                 agent.set_session_notification_sink(Rc::new(move |notification, persist, cx| {
                     let _ = weak_host.update(cx, |host, cx| {
-                        host.emit_session_update(notification, persist, cx);
+                        host.emit_session_update(notification, persist, "", cx);
                     });
                 }));
             });
@@ -136,10 +225,11 @@ impl SessionHost {
         Ok(host)
     }
 
-    fn emit_session_update(
+    pub(crate) fn emit_session_update(
         &mut self,
         session_notification: acp::SessionNotification,
         persist: bool,
+        agent_id: &str,
         cx: &mut App,
     ) {
         let json = match notification(methods::SESSION_UPDATE, &session_notification) {
@@ -152,8 +242,16 @@ impl SessionHost {
         if persist {
             let seq = self.log.append(json.clone()).0;
             let proto = self.session.clone();
+            let agent_id = agent_id.to_string();
             cx.spawn(async move |_| {
-                if let Err(error) = proto.request(proto::SessionAgentRpc { json, seq }).await {
+                if let Err(error) = proto
+                    .request(proto::SessionAgentRpc {
+                        json,
+                        seq,
+                        agent_id,
+                    })
+                    .await
+                {
                     log::debug!("session/update push skipped (no GUI?): {error:#}");
                 }
                 anyhow::Ok(())
@@ -162,10 +260,29 @@ impl SessionHost {
         }
     }
 
-    fn retain_daemon_thread(&mut self, thread: Entity<AcpThread>, cx: &App) -> acp::SessionId {
+    pub(crate) fn retain_daemon_thread(
+        &mut self,
+        thread: Entity<AcpThread>,
+        cx: &App,
+    ) -> acp::SessionId {
         let session_id = thread.read(cx).session_id().clone();
         self.daemon_threads.insert(session_id.clone(), thread);
         session_id
+    }
+
+    fn refresh_prompt_policy(&mut self, cx: &mut gpui::Context<Self>) {
+        self.config = HostConfig::from_app(cx);
+        let permit = self.config.permit_tool_permissions();
+        let handler: Rc<dyn agent::DaemonPromptHandler> =
+            Rc::new(HostPromptHandler(cx.weak_entity()));
+        self.agent.update(cx, |agent, _cx| {
+            agent.set_daemon_prompt_handler(handler, permit);
+        });
+    }
+
+    fn notify_gui_attached(&mut self) {
+        self.gui_generation = self.gui_generation.wrapping_add(1);
+        let _ = self.gui_attached_tx.send(self.gui_generation);
     }
 
     async fn handle_subscribe(
@@ -174,7 +291,9 @@ impl SessionHost {
         mut cx: AsyncApp,
     ) -> Result<proto::SessionCatchUp> {
         let last_seq = EventSeq(envelope.payload.last_seq);
-        Ok(this.update(&mut cx, |host, _cx| {
+        Ok(this.update(&mut cx, |host, cx| {
+            host.refresh_prompt_policy(cx);
+            host.notify_gui_attached();
             let catch_up = host.log.catch_up(last_seq);
             proto::SessionCatchUp {
                 from_seq: catch_up.from_seq.0,
@@ -189,8 +308,14 @@ impl SessionHost {
         envelope: TypedEnvelope<proto::SessionAgentRpc>,
         mut cx: AsyncApp,
     ) -> Result<proto::SessionAgentRpc> {
-        let json = Self::handle_json_rpc(this, envelope.payload.json, &mut cx).await;
-        Ok(proto::SessionAgentRpc { json, seq: 0 })
+        let agent_id = envelope.payload.agent_id;
+        let json =
+            Self::handle_json_rpc(this, envelope.payload.json, agent_id.clone(), &mut cx).await;
+        Ok(proto::SessionAgentRpc {
+            json,
+            seq: 0,
+            agent_id,
+        })
     }
 }
 
@@ -213,10 +338,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_permissions_do_not_stall() {
+    fn default_asks_and_waits_forever() {
+        let config = HostConfig::default();
+        assert_eq!(config.detached_permissions, DetachedPermissions::Ask);
         assert_eq!(
-            HostConfig::default().disconnected_permissions,
-            DisconnectedPermissionPolicy::AllowAccordingToTrust
+            config.disconnected_prompt_wait,
+            DisconnectedPromptWait::Forever
         );
+        assert!(!config.permit_tool_permissions());
     }
 }

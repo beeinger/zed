@@ -6,7 +6,7 @@
 
 mod remote_agent_connection;
 
-pub use remote_agent_connection::{RemoteAgentConnection, apply_catch_up};
+pub use remote_agent_connection::{RemoteAgentConnection, apply_catch_up, connect_external_agent};
 pub use session_protocol::daemon_socket_id;
 
 /// Placeholder so production binaries can call `session_client::init` at a

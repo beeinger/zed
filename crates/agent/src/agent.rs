@@ -30,8 +30,9 @@ pub use tool_permissions::*;
 pub use tools::*;
 
 use acp_thread::{
-    AcpThread, AgentModelId, AgentModelSelector, AgentSessionInfo, AgentSessionList,
-    AgentSessionListRequest, AgentSessionListResponse, ClientUserMessageId, TokenUsageRatio,
+    AcpThread, AgentConnection, AgentModelId, AgentModelSelector, AgentSessionInfo,
+    AgentSessionList, AgentSessionListRequest, AgentSessionListResponse, ClientUserMessageId,
+    TokenUsageRatio,
 };
 use agent_client_protocol::schema::v1 as acp;
 use agent_skills::{
@@ -463,13 +464,41 @@ pub struct NativeAgent {
     // FORK:session-update-sink
     /// Daemon host: copy turn events as ACP `session/update` (GUI is another App).
     session_notification_sink: Option<SessionNotificationSink>,
-    /// `Some(true)` allow-once, `Some(false)` deny-once, `None` prompt the local thread.
-    auto_resolve_permissions: Option<bool>,
+    /// Overlay host: ask the GUI over ACP instead of the local `AcpThread`.
+    daemon_prompt_handler: Option<Rc<dyn DaemonPromptHandler>>,
+    /// Overlay host: auto-allow tool permissions (`permit_everything`).
+    permit_tool_permissions: bool,
     // FORK:end
 }
 
 /// ACP `session/update` callback. The bool is persist-to-event-log (live vs replay).
 pub type SessionNotificationSink = Rc<dyn Fn(acp::SessionNotification, bool, &mut App)>;
+
+/// Result of waiting for a GUI (or timeout) to answer a daemon-side prompt.
+#[derive(Debug)]
+pub enum DaemonPromptWait<T> {
+    Answered(T),
+    /// Permissions: caller must shut down the turn. Elicitation: continue without the form.
+    TimedOut,
+}
+
+/// Overlay host: permission and elicitation wait on a reconnectable GUI, not a window.
+pub trait DaemonPromptHandler: 'static {
+    fn request_permission(
+        &self,
+        session_id: acp::SessionId,
+        tool_call: acp::ToolCallUpdate,
+        options: acp_thread::PermissionOptions,
+        kind: acp_thread::AuthorizationKind,
+        cx: &mut App,
+    ) -> Task<DaemonPromptWait<acp_thread::SelectedPermissionOutcome>>;
+
+    fn request_elicitation(
+        &self,
+        request: acp::CreateElicitationRequest,
+        cx: &mut App,
+    ) -> Task<DaemonPromptWait<acp::CreateElicitationResponse>>;
+}
 
 #[derive(Default)]
 enum SkillsState {
@@ -637,7 +666,8 @@ impl NativeAgent {
                 skills_state: SkillsState::default(),
                 // FORK:session-update-sink
                 session_notification_sink: None,
-                auto_resolve_permissions: None,
+                daemon_prompt_handler: None,
+                permit_tool_permissions: false,
                 // FORK:end
             }
         })
@@ -771,8 +801,13 @@ impl NativeAgent {
         self.session_notification_sink = Some(sink);
     }
 
-    pub fn set_auto_resolve_permissions(&mut self, allow: Option<bool>) {
-        self.auto_resolve_permissions = allow;
+    pub fn set_daemon_prompt_handler(
+        &mut self,
+        handler: Rc<dyn DaemonPromptHandler>,
+        permit_tool_permissions: bool,
+    ) {
+        self.daemon_prompt_handler = Some(handler);
+        self.permit_tool_permissions = permit_tool_permissions;
     }
     // FORK:end
 
@@ -2354,27 +2389,69 @@ impl NativeAgentConnection {
                                 context: _,
                                 kind,
                             }) => {
-                                // FORK:session-update-sink — GUI death must not stall the turn
-                                let auto_resolve = connection.as_ref().and_then(|connection| {
-                                    connection
-                                        .0
-                                        .read_with(cx, |agent, _| agent.auto_resolve_permissions)
-                                });
-                                if let Some(allow) = auto_resolve {
-                                    let kind = if allow {
-                                        acp::PermissionOptionKind::AllowOnce
-                                    } else {
-                                        acp::PermissionOptionKind::RejectOnce
-                                    };
-                                    if let Some(option) = options.first_option_of_kind(kind) {
-                                        let _ = response.send(
-                                            acp_thread::SelectedPermissionOutcome::new(
-                                                option.option_id.clone(),
-                                                option.kind,
-                                            ),
-                                        );
-                                        continue;
-                                    }
+                                // FORK:session-update-sink
+                                let (permit_tool_permissions, prompt_handler) =
+                                    connection.as_ref().map_or((false, None), |connection| {
+                                        connection.0.read_with(cx, |agent, _| {
+                                            (
+                                                agent.permit_tool_permissions,
+                                                agent.daemon_prompt_handler.clone(),
+                                            )
+                                        })
+                                    });
+                                if permit_tool_permissions
+                                    && let Some(outcome) =
+                                        permit_everything_permission_outcome(&options)
+                                {
+                                    let _ = response.send(outcome);
+                                    continue;
+                                }
+                                if let Some(handler) = prompt_handler {
+                                    let session_id = acp_thread.read_with(cx, |thread, _| {
+                                        thread.session_id().clone()
+                                    })?;
+                                    let wait_task = cx.update(|cx| {
+                                        handler.request_permission(
+                                            session_id,
+                                            tool_call,
+                                            options.clone(),
+                                            kind,
+                                            cx,
+                                        )
+                                    });
+                                    let connection = connection.clone();
+                                    let acp_thread = acp_thread.clone();
+                                    cx.spawn(async move |cx| {
+                                        match wait_task.await {
+                                            DaemonPromptWait::Answered(outcome) => {
+                                                let _ = response.send(outcome);
+                                            }
+                                            DaemonPromptWait::TimedOut => {
+                                                if let Some(connection) = connection
+                                                    && let Ok(session_id) = acp_thread.read_with(
+                                                        cx,
+                                                        |thread, _| thread.session_id().clone(),
+                                                    )
+                                                {
+                                                    cx.update(|cx| {
+                                                        connection.cancel(&session_id, cx);
+                                                    });
+                                                }
+                                                if let Some(option) = options.first_option_of_kind(
+                                                    acp::PermissionOptionKind::RejectOnce,
+                                                ) {
+                                                    let _ = response.send(
+                                                        acp_thread::SelectedPermissionOutcome::new(
+                                                            option.option_id.clone(),
+                                                            option.kind,
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    })
+                                    .detach();
+                                    continue;
                                 }
                                 // FORK:end
                                 let outcome_task = acp_thread.update(cx, |thread, cx| {
@@ -2416,16 +2493,41 @@ impl NativeAgentConnection {
                                 schema,
                                 response,
                             }) => {
-                                // FORK:session-update-sink — do not wait on a window that may be gone
-                                let auto_resolve = connection.as_ref().and_then(|connection| {
-                                    connection
-                                        .0
-                                        .read_with(cx, |agent, _| agent.auto_resolve_permissions)
+                                // FORK:session-update-sink
+                                let prompt_handler = connection.as_ref().and_then(|connection| {
+                                    connection.0.read_with(cx, |agent, _| {
+                                        agent.daemon_prompt_handler.clone()
+                                    })
                                 });
-                                if auto_resolve.is_some() {
-                                    let _ = response.send(acp::CreateElicitationResponse::new(
-                                        acp::ElicitationAction::Cancel,
-                                    ));
+                                if let Some(handler) = prompt_handler {
+                                    let request_result = acp_thread.update(cx, |thread, _cx| {
+                                        let scope = acp::ElicitationSessionScope::new(
+                                            thread.session_id().clone(),
+                                        )
+                                        .tool_call_id(tool_call_id.clone());
+                                        acp::CreateElicitationRequest::new(
+                                            acp::ElicitationFormMode::new(scope, schema.clone()),
+                                            message.clone(),
+                                        )
+                                    })?;
+                                    let wait_task = cx.update(|cx| {
+                                        handler.request_elicitation(request_result, cx)
+                                    });
+                                    cx.spawn(async move |_cx| {
+                                        let elicitation_response = match wait_task.await {
+                                            DaemonPromptWait::Answered(response) => response,
+                                            DaemonPromptWait::TimedOut => {
+                                                acp::CreateElicitationResponse::new(
+                                                    acp::ElicitationAction::Cancel,
+                                                )
+                                            }
+                                        };
+                                        response
+                                            .send(elicitation_response)
+                                            .map_err(|_| anyhow!("elicitation receiver was dropped"))
+                                            .log_err();
+                                    })
+                                    .detach();
                                     continue;
                                 }
                                 // FORK:end
@@ -2558,6 +2660,16 @@ impl NativeAgentConnection {
     }
 }
 
+fn permit_everything_permission_outcome(
+    options: &acp_thread::PermissionOptions,
+) -> Option<acp_thread::SelectedPermissionOutcome> {
+    let option = options.first_option_of_kind(acp::PermissionOptionKind::AllowOnce)?;
+    Some(acp_thread::SelectedPermissionOutcome::new(
+        option.option_id.clone(),
+        option.kind,
+    ))
+}
+
 fn session_updates_from_thread_event(event: &ThreadEvent) -> Vec<acp::SessionUpdate> {
     match event {
         ThreadEvent::UserMessage(message) => message
@@ -2612,6 +2724,33 @@ mod session_update_sink_tests {
     fn stop_is_not_a_session_update() {
         assert!(
             session_updates_from_thread_event(&ThreadEvent::Stop(acp::StopReason::EndTurn))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn permit_everything_picks_allow_once() {
+        let options = acp_thread::PermissionOptions::Flat(vec![
+            acp::PermissionOption::new(
+                "allow-once",
+                "Allow once",
+                acp::PermissionOptionKind::AllowOnce,
+            ),
+            acp::PermissionOption::new(
+                "reject-once",
+                "Reject once",
+                acp::PermissionOptionKind::RejectOnce,
+            ),
+        ]);
+        let outcome = permit_everything_permission_outcome(&options).expect("allow-once");
+        assert_eq!(outcome.option_id.0.as_ref(), "allow-once");
+        assert_eq!(outcome.option_kind, acp::PermissionOptionKind::AllowOnce);
+    }
+
+    #[test]
+    fn permission_and_elicitation_are_not_session_updates() {
+        assert!(
+            session_updates_from_thread_event(&ThreadEvent::Stop(acp::StopReason::Cancelled))
                 .is_empty()
         );
     }

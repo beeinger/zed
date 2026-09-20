@@ -283,11 +283,45 @@ impl<T> FlattenAcpResult<T> for Result<Result<T, acp::Error>, anyhow::Error> {
     }
 }
 
+/// Daemon overlay: FS/terminal stay on this `AcpConnection`; prompts and
+/// `session/update` are forwarded to a reconnectable GUI.
+pub trait DetachedAcpIo: 'static {
+    fn on_session_update(
+        &self,
+        notification: acp::SessionNotification,
+        persist: bool,
+        cx: &mut App,
+    );
+
+    fn request_permission(
+        &self,
+        request: acp::RequestPermissionRequest,
+        cx: &mut App,
+    ) -> Task<Result<acp::RequestPermissionResponse>>;
+
+    fn request_elicitation(
+        &self,
+        request: acp::CreateElicitationRequest,
+        cx: &mut App,
+    ) -> Task<Result<acp::CreateElicitationResponse>>;
+}
+
+thread_local! {
+    static PENDING_DETACHED_IO: RefCell<Option<Rc<dyn DetachedAcpIo>>> = RefCell::new(None);
+}
+
+fn take_detached_io() -> Option<Rc<dyn DetachedAcpIo>> {
+    PENDING_DETACHED_IO.with(|slot| slot.borrow_mut().take())
+}
+
 /// Holds state needed by foreground work dispatched from background handler closures.
 struct ClientContext {
     sessions: Rc<RefCell<HashMap<acp::SessionId, AcpSession>>>,
     session_list: Rc<RefCell<Option<Rc<AcpSessionList>>>>,
     request_elicitations: Entity<ElicitationStore>,
+    // FORK:detach-external-acp
+    detached_io: Option<Rc<dyn DetachedAcpIo>>,
+    // FORK:end
 }
 
 fn dispatch_queue_closed_error() -> acp::Error {
@@ -648,6 +682,27 @@ pub async fn connect(
     default_config_options: HashMap<String, AgentConfigOptionValue>,
     cx: &mut AsyncApp,
 ) -> Result<Rc<dyn AgentConnection>> {
+    // FORK:detach-external-acp — GUI remote must not SSH-wrap stdio; the daemon holds the child.
+    if project.read_with(cx, |project, _cx| project.is_via_remote_server()) {
+        let default_config_options = default_config_options
+            .iter()
+            .filter_map(|(key, value)| {
+                serde_json::to_value(value)
+                    .ok()
+                    .map(|value| (key.clone(), value))
+            })
+            .collect();
+        return session_client::connect_external_agent(
+            agent_id,
+            project,
+            command,
+            default_mode,
+            default_config_options,
+            cx,
+        )
+        .await;
+    }
+    // FORK:end
     let conn = AcpConnection::stdio(
         agent_id,
         project,
@@ -795,6 +850,13 @@ fn client_capabilities_for_agent(
 }
 
 impl AcpConnection {
+    /// Install IO forwarding for the next `stdio` spawn on this thread (daemon).
+    pub fn set_detached_io_for_next_spawn(io: Rc<dyn DetachedAcpIo>) {
+        PENDING_DETACHED_IO.with(|slot| {
+            *slot.borrow_mut() = Some(io);
+        });
+    }
+
     pub fn subscribe_debug_messages(
         &self,
     ) -> (
@@ -813,6 +875,14 @@ impl AcpConnection {
         default_config_options: HashMap<String, AgentConfigOptionValue>,
         cx: &mut AsyncApp,
     ) -> Result<Self> {
+        // FORK:detach-external-acp
+        if project.read_with(cx, |project, _cx| project.is_via_remote_server()) {
+            anyhow::bail!(
+                "ACP children must be spawned on the session host daemon, not SSH-wrapped in the GUI"
+            );
+        }
+        let detached_io = take_detached_io();
+        // FORK:end
         let root_dir = project.read_with(cx, |project, cx| {
             project
                 .default_path_list(cx)
@@ -966,6 +1036,9 @@ impl AcpConnection {
             sessions: sessions.clone(),
             session_list: client_session_list.clone(),
             request_elicitations: request_elicitations.clone(),
+            // FORK:detach-external-acp
+            detached_io,
+            // FORK:end
         };
         let dispatch_task = cx.spawn({
             let mut dispatch_rx = dispatch_rx;
@@ -2518,6 +2591,7 @@ pub mod test_support {
             sessions: sessions.clone(),
             session_list: client_session_list.clone(),
             request_elicitations: request_elicitations.clone(),
+            detached_io: None,
         };
         let dispatch_task = cx.spawn({
             let mut dispatch_rx = dispatch_rx;
@@ -3998,6 +4072,7 @@ mod tests {
             sessions: sessions.clone(),
             session_list: client_session_list.clone(),
             request_elicitations: request_elicitations.clone(),
+            detached_io: None,
         };
         // `TestAppContext::spawn` hands out an `AsyncApp` by value, whereas the
         // production path uses `Context::spawn` which hands out `&mut AsyncApp`.
@@ -4574,6 +4649,28 @@ fn handle_request_permission(
     cx: &mut AsyncApp,
     ctx: &ClientContext,
 ) {
+    // FORK:detach-external-acp
+    if let Some(io) = ctx.detached_io.clone() {
+        let cancellation = responder.cancellation();
+        cx.spawn(async move |cx| {
+            let task = cx.update(|cx| io.request_permission(args, cx));
+            let result = cancellation
+                .run_until_cancelled(async {
+                    task.await
+                        .map_err(|error| acp::Error::internal_error().data(error.to_string()))
+                })
+                .await;
+            match result {
+                Ok(response) => {
+                    responder.respond(response).log_err();
+                }
+                Err(error) => respond_err(responder, error),
+            }
+        })
+        .detach();
+        return;
+    }
+    // FORK:end
     let thread = match session_thread(ctx, &args.session_id) {
         Ok(t) => t,
         Err(e) => return respond_err(responder, e),
@@ -4626,6 +4723,28 @@ fn handle_create_elicitation(
     cx: &mut AsyncApp,
     ctx: &ClientContext,
 ) {
+    // FORK:detach-external-acp
+    if let Some(io) = ctx.detached_io.clone() {
+        let cancellation = responder.cancellation();
+        cx.spawn(async move |cx| {
+            let task = cx.update(|cx| io.request_elicitation(args, cx));
+            let result = cancellation
+                .run_until_cancelled(async {
+                    task.await
+                        .map_err(|error| acp::Error::internal_error().data(error.to_string()))
+                })
+                .await;
+            match result {
+                Ok(response) => {
+                    responder.respond(response).log_err();
+                }
+                Err(error) => respond_err(responder, error),
+            }
+        })
+        .detach();
+        return;
+    }
+    // FORK:end
     match args.scope() {
         acp::ElicitationScope::Session(scope) => {
             let thread = match session_thread(ctx, &scope.session_id) {
@@ -4807,6 +4926,12 @@ fn handle_session_notification(
     cx: &mut AsyncApp,
     ctx: &ClientContext,
 ) {
+    // FORK:detach-external-acp
+    if let Some(io) = ctx.detached_io.clone() {
+        let forwarded = notification.clone();
+        let _ = cx.update(|cx| io.on_session_update(forwarded, true, cx));
+    }
+    // FORK:end
     // Extract everything we need from the session while briefly borrowing.
     let (thread, session_modes, config_opts_data) = {
         let sessions = ctx.sessions.borrow();
