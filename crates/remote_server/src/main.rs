@@ -56,7 +56,9 @@ fn main() -> anyhow::Result<()> {
         res
     } else {
         std::io::stderr()
-            .write_all(b"usage: remote <run|proxy|version>\n")
+            // FORK:daemon-service
+            .write_all(b"usage: remote <run|proxy|serve|version>\n")
+            // FORK:end
             .ok();
         std::process::exit(1);
     }

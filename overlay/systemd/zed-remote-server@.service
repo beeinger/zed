@@ -1,0 +1,34 @@
+[Unit]
+Description=Zed always-on session host (%i)
+Documentation=https://github.com/zed-industries/zed
+After=network-online.target
+Wants=network-online.target
+
+# Install as a *user* unit so the daemon runs as you, not root:
+#   mkdir -p ~/.config/systemd/user
+#   cp overlay/systemd/zed-remote-server@.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now zed-remote-server@IDENTIFIER
+#
+# IDENTIFIER must match ConnectionIdentifier::to_string() for that project:
+#   optional release-channel prefix + 13-char daemon_socket_id
+#   ("s" + 12 hex chars from hash of local/localhost/project_root).
+# The GUI still attaches with `remote_server proxy --identifier IDENTIFIER`.
+#
+# ExecStart: cargo produces `target/debug/remote_server` (or install a
+# sibling named remote_server / zed-remote-server). Override with:
+#   systemctl --user edit zed-remote-server@IDENTIFIER
+# The GUI also honors $ZED_REMOTE_SERVER.
+
+[Service]
+Type=simple
+ExecStart=%h/.local/libexec/zed-remote-server serve --identifier %i
+Restart=on-failure
+RestartSec=2
+
+# Sockets and pid live under XDG data (default ~/.local/share/zed):
+#   $XDG_DATA_HOME/zed/server_state/%i/{server.pid,stdin.sock,stdout.sock,stderr.sock}
+#   $XDG_DATA_HOME/zed/logs/server-%i.log
+
+[Install]
+WantedBy=default.target

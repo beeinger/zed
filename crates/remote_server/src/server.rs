@@ -79,13 +79,17 @@ pub enum Commands {
         #[arg(long)]
         identifier: String,
     },
+    // FORK:daemon-service
+    Serve {
+        /// Same identifier the GUI proxy uses (`ConnectionIdentifier`).
+        #[arg(long)]
+        identifier: String,
+    },
+    // FORK:end
     Version,
 }
 
-pub fn run(command: Commands) -> anyhow::Result<()> {
-    use anyhow::Context;
-    use release_channel::{RELEASE_CHANNEL, ReleaseChannel};
-
+pub fn run(command: Commands) -> Result<()> {
     match command {
         Commands::Run {
             log_file,
@@ -104,6 +108,18 @@ pub fn run(command: Commands) -> anyhow::Result<()> {
             identifier,
             reconnect,
         } => execute_proxy(identifier, reconnect).context("running proxy on the remote server"),
+        // FORK:daemon-service
+        Commands::Serve { identifier } => {
+            let paths = ServerPaths::new(&identifier)?;
+            execute_run(
+                paths.log_file,
+                paths.pid_file,
+                paths.stdin_socket,
+                paths.stdout_socket,
+                paths.stderr_socket,
+            )
+        }
+        // FORK:end
         Commands::Version => {
             let release_channel = *RELEASE_CHANNEL;
             match release_channel {
@@ -400,6 +416,16 @@ impl ServerListeners {
     }
 }
 
+fn unlink_unix_socket(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!("removing leftover socket {}", path.display())
+        }),
+    }
+}
+
 fn start_server(
     listeners: ServerListeners,
     log_rx: Receiver<Vec<u8>>,
@@ -604,6 +630,12 @@ pub fn execute_run(
 
     write_pid_file(&pid_file, pid)
         .with_context(|| format!("failed to write pid file: {pid_file:?}"))?;
+
+    // FORK:daemon-service — leftover sockets from a crash would make bind fail in a loop.
+    unlink_unix_socket(&stdin_socket)?;
+    unlink_unix_socket(&stdout_socket)?;
+    unlink_unix_socket(&stderr_socket)?;
+    // FORK:end
 
     let listeners = ServerListeners::new(stdin_socket, stdout_socket, stderr_socket)?;
 
