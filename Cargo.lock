@@ -8963,6 +8963,7 @@ dependencies = [
  "client",
  "gpui",
  "log",
+ "paths",
  "release_channel",
  "smol",
  "util",
@@ -15172,6 +15173,7 @@ name = "release_channel"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "paths",
  "semver",
 ]
 

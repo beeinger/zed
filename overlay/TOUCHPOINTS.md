@@ -72,6 +72,26 @@ APPLIED daemon-detach crates/remote_server/src/server.rs
 APPLIED daemon-thread-list crates/agent_ui/src/agent_panel.rs
 APPLIED daemon-thread-list crates/agent_ui/src/thread_metadata_store.rs
 APPLIED daemon-thread-status crates/sidebar/src/sidebar.rs
+APPLIED branding crates/paths/src/paths.rs
+APPLIED branding crates/release_channel/Cargo.toml
+APPLIED branding crates/release_channel/src/lib.rs
+APPLIED branding crates/zed/Cargo.toml
+APPLIED branding crates/zed/src/main.rs
+APPLIED branding crates/zed/src/zed.rs
+APPLIED branding crates/zed/src/zed/app_menus.rs
+APPLIED branding crates/zed/src/zed/open_listener.rs
+APPLIED branding crates/zed/src/zed/open_url_modal.rs
+APPLIED branding crates/cli/src/main.rs
+APPLIED branding crates/install_cli/Cargo.toml
+APPLIED branding crates/install_cli/src/install_cli_binary.rs
+APPLIED branding crates/install_cli/src/register_zed_scheme.rs
+APPLIED branding crates/remote/src/transport/ssh.rs
+APPLIED branding crates/remote/src/transport/wsl.rs
+APPLIED branding crates/remote/src/transport/docker.rs
+APPLIED branding script/bundle-mac
+APPLIED branding script/uninstall.sh
+APPLIED debug-logs crates/zed/src/main.rs
+APPLIED debug-logs script/bundle-mac
 
 ## Planned (not yet in tree)
 

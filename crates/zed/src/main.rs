@@ -288,6 +288,18 @@ fn main() {
 
     zlog::init();
 
+    // FORK:debug-logs — testers can send ~/Library/Logs/Peekado/Peekado.log
+    if std::env::var_os("ZED_LOG").is_none() && std::env::var_os("RUST_LOG").is_none() {
+        zlog::process_env(Some(
+            "info,session_host=debug,session_client=debug,session_transport=debug,session_protocol=debug,remote=debug,remote_server=debug,agent=debug,agent_servers=debug,agent_ui=debug"
+                .into(),
+        ));
+    }
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
+    }
+    // FORK:end
+
     if stdout_is_a_pty() {
         zlog::init_output_stdout();
     } else {
@@ -327,7 +339,8 @@ fn main() {
         .unwrap();
 
     log::info!(
-        "========== starting zed version {}, sha {} ==========",
+        "========== starting {} version {}, sha {} ==========",
+        paths::APP_NAME,
         app_version,
         app_commit_sha
             .as_ref()
@@ -335,6 +348,7 @@ fn main() {
             .as_deref()
             .unwrap_or("unknown"),
     );
+    log::info!("log file: {}", paths::log_file().display());
 
     #[cfg(windows)]
     check_for_conpty_dll();
@@ -379,7 +393,7 @@ fn main() {
         }
     };
     if failed_single_instance_check {
-        println!("zed is already running");
+        println!("{} is already running", paths::APP_NAME);
         return;
     }
 
@@ -398,7 +412,7 @@ fn main() {
                         app_version.patch,
                     )
                     .to_string(),
-                    binary: "zed".to_string(),
+                    binary: paths::APP_NAME_LOWERCASE.to_string(),
                     release_channel: release_channel::RELEASE_CHANNEL_NAME.clone(),
                     commit_sha: app_commit_sha
                         .as_ref()
@@ -411,7 +425,7 @@ fn main() {
                         background_executor1.spawn(task).detach();
                     }
                 },
-                |pid| paths::temp_dir().join(format!("zed-crash-handler-{pid}")),
+            |pid| paths::temp_dir().join(format!("{}-crash-handler-{pid}", paths::APP_NAME_LOWERCASE)),
                 move |duration| background_executor.timer(duration),
             )),
         )
@@ -1695,7 +1709,9 @@ fn stdout_is_a_pty() -> bool {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "zed", disable_version_flag = true, max_term_width = 100)]
+// FORK:branding
+#[command(name = "peekado", disable_version_flag = true, max_term_width = 100)]
+// FORK:end
 struct Args {
     /// A sequence of space-separated paths or urls that you want to open.
     ///
@@ -1713,9 +1729,9 @@ struct Args {
     /// Sets a custom directory for all user data (e.g., database, extensions, logs).
     ///
     /// This overrides the default platform-specific data directory location.
-    /// On macOS, the default is `~/Library/Application Support/Zed`.
-    /// On Linux/FreeBSD, the default is `$XDG_DATA_HOME/zed`.
-    /// On Windows, the default is `%LOCALAPPDATA%\Zed`.
+    /// On macOS, the default is `~/Library/Application Support/Peekado`.
+    /// On Linux/FreeBSD, the default is `$XDG_DATA_HOME/peekado`.
+    /// On Windows, the default is `%LOCALAPPDATA%\Peekado`.
     #[arg(long, value_name = "DIR", verbatim_doc_comment)]
     user_data_dir: Option<String>,
 
@@ -1817,8 +1833,7 @@ fn parse_url_arg(arg: &str, cx: &App) -> String {
         Ok(path) => format!("file://{}", path.display()),
         Err(_) => {
             if arg.starts_with("file://")
-                || arg.starts_with("zed://")
-                || arg.starts_with("zed-cli://")
+                || paths::is_app_or_cli_url(arg)
                 || arg.starts_with("ssh://")
                 || parse_zed_link(arg, cx).is_some()
             {

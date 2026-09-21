@@ -59,6 +59,8 @@ The mission:
   agent hub is created, so daemon LLM HTTP can authenticate.
 - `remote_server serve --identifier` is the systemd/launchd-friendly entry
   (same sockets as `run`). See `overlay/systemd` and `overlay/launchd`.
+- User-facing identity is **Peekado** so this fork can sit next to official
+  Zed. Crate names stay `zed`. See `overlay/BRANDING.md`.
 
 ## Crates
 

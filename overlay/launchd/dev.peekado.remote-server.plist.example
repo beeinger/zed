@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Copy to ~/Library/LaunchAgents/dev.zed.remote-server.plist and replace:
-    /usr/local/libexec/zed-remote-server  -> your remote_server binary
-    REPLACE_WITH_DAEMON_ID                -> ConnectionIdentifier::to_string()
+  Copy to ~/Library/LaunchAgents/dev.peekado.remote-server.plist and replace:
+    /usr/local/libexec/peekado-remote-server  -> your remote_server binary
+    REPLACE_WITH_DAEMON_ID                    -> ConnectionIdentifier::to_string()
                                             (release prefix + "s" + 12 hex chars)
   KeepAlive/SuccessfulExit=false restarts after a crash, not a clean stop.
 -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>dev.zed.remote-server</string>
+	<string>dev.peekado.remote-server</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/local/libexec/zed-remote-server</string>
+		<string>/usr/local/libexec/peekado-remote-server</string>
 		<string>serve</string>
 		<string>--identifier</string>
 		<string>REPLACE_WITH_DAEMON_ID</string>

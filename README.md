@@ -1,6 +1,19 @@
 > [!IMPORTANT]
 > Remove this line to confirm you've reviewed this PR before submitting.
 
+# Peekado
+
+Peekado is a [Zed](https://zed.dev) fork: the GUI is a window onto always-on
+local and remote session hosts. Official Zed can stay installed beside it.
+
+- Architecture: [`overlay/README.md`](./overlay/README.md)
+- App name, paths, URL scheme: [`overlay/BRANDING.md`](./overlay/BRANDING.md)
+- macOS tester build: `overlay/scripts/bundle-macos.sh` or the
+  **Peekado macOS** GitHub Action
+
+Crate names and most source identifiers remain `zed` so merging
+`zed-industries/zed` stays mechanical.
+
 # Zed
 
 [![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)

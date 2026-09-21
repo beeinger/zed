@@ -13,4 +13,7 @@ doctest = false
 
 [dependencies]
 gpui.workspace = true
+# FORK:branding
+paths.workspace = true
+# FORK:end
 semver.workspace = true

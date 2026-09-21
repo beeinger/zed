@@ -1,6 +1,7 @@
 # Merging official Zed
 
-Keep `zed-industries/zed` as git remote `upstream` and this fork as `origin`.
+Keep `zed-industries/zed` as git remote `upstream` and this fork as `origin`
+(`beeinger/peekado`).
 
 ## Procedure
 

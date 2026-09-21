@@ -44,10 +44,12 @@ pub static RELEASE_CHANNEL: LazyLock<ReleaseChannel> =
 #[cfg(target_os = "windows")]
 pub fn app_identifier() -> &'static str {
     match *RELEASE_CHANNEL {
-        ReleaseChannel::Dev => "Zed-Editor-Dev",
-        ReleaseChannel::Nightly => "Zed-Editor-Nightly",
-        ReleaseChannel::Preview => "Zed-Editor-Preview",
-        ReleaseChannel::Stable => "Zed-Editor-Stable",
+        // FORK:branding
+        ReleaseChannel::Dev => "Peekado-Editor-Dev",
+        ReleaseChannel::Nightly => "Peekado-Editor-Nightly",
+        ReleaseChannel::Preview => "Peekado-Editor-Preview",
+        ReleaseChannel::Stable => "Peekado-Editor-Stable",
+        // FORK:end
     }
 }
 
@@ -205,10 +207,12 @@ impl ReleaseChannel {
     /// Returns the display name for this [`ReleaseChannel`].
     pub fn display_name(&self) -> &'static str {
         match self {
-            ReleaseChannel::Dev => "Zed Dev",
-            ReleaseChannel::Nightly => "Zed Nightly",
-            ReleaseChannel::Preview => "Zed Preview",
-            ReleaseChannel::Stable => "Zed",
+            // FORK:branding
+            ReleaseChannel::Dev => "Peekado Dev",
+            ReleaseChannel::Nightly => "Peekado Nightly",
+            ReleaseChannel::Preview => "Peekado Preview",
+            ReleaseChannel::Stable => "Peekado",
+            // FORK:end
         }
     }
 
@@ -227,10 +231,12 @@ impl ReleaseChannel {
     /// This also has to match the bundle identifier for Zed on macOS.
     pub fn app_id(&self) -> &'static str {
         match self {
-            ReleaseChannel::Dev => "dev.zed.Zed-Dev",
-            ReleaseChannel::Nightly => "dev.zed.Zed-Nightly",
-            ReleaseChannel::Preview => "dev.zed.Zed-Preview",
-            ReleaseChannel::Stable => "dev.zed.Zed",
+            // FORK:branding
+            ReleaseChannel::Dev => paths::BUNDLE_ID_DEV,
+            ReleaseChannel::Nightly => paths::BUNDLE_ID_NIGHTLY,
+            ReleaseChannel::Preview => paths::BUNDLE_ID_PREVIEW,
+            ReleaseChannel::Stable => paths::BUNDLE_ID_STABLE,
+            // FORK:end
         }
     }
 

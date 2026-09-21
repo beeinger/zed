@@ -15,7 +15,9 @@ pub const EDITORCONFIG_NAME: &str = ".editorconfig";
 /// and state directory paths.
 ///
 /// Forks should change this to avoid colliding with Zed's user data.
-pub const APP_NAME: &str = "Zed";
+// FORK:branding
+pub const APP_NAME: &str = "Peekado";
+// FORK:end
 
 /// Lowercased form of [`APP_NAME`], for use in XDG-style paths on
 /// Linux/FreeBSD and the macOS `~/.config` fallback.
@@ -46,6 +48,55 @@ pub const APP_NAME_LOWERCASE: &str = {
     }
 };
 
+// FORK:branding — identity that must stay distinct from official Zed so both
+// apps can run on the same machine. Keep crate names and zed://schemas as-is.
+/// OS-registered custom URL scheme. Distinct from Zed so both apps can coexist.
+pub const URL_SCHEME: &str = "peekado";
+
+/// CLI IPC URL scheme (macOS Launch Services / Windows). Distinct from Zed.
+pub const CLI_URL_SCHEME: &str = "peekado-cli";
+
+pub const URL_SCHEME_PREFIX: &str = const_format::concatcp!(URL_SCHEME, "://");
+pub const CLI_URL_SCHEME_PREFIX: &str = const_format::concatcp!(CLI_URL_SCHEME, "://");
+
+/// Remote-host directory for uploaded `remote_server` binaries.
+pub const REMOTE_SERVER_DIR_NAME: &str = ".peekado_server";
+
+/// WSL counterpart of [`REMOTE_SERVER_DIR_NAME`].
+pub const REMOTE_WSL_SERVER_DIR_NAME: &str = ".peekado_wsl_server";
+
+/// Filename prefix for uploaded remote-server binaries.
+pub const REMOTE_SERVER_BINARY_PREFIX: &str = "peekado-remote-server";
+
+/// Bundle identifiers. Must match `crates/zed/Cargo.toml` `package.metadata.bundle-*`.
+pub const BUNDLE_ID_STABLE: &str = "dev.peekado.Peekado";
+pub const BUNDLE_ID_PREVIEW: &str = "dev.peekado.Peekado-Preview";
+pub const BUNDLE_ID_NIGHTLY: &str = "dev.peekado.Peekado-Nightly";
+pub const BUNDLE_ID_DEV: &str = "dev.peekado.Peekado-Dev";
+
+/// Rewrite Peekado URL schemes onto upstream `zed://` / `zed-cli://` parsers.
+pub fn rewrite_to_upstream_url_scheme(url: String) -> String {
+    if let Some(rest) = url.strip_prefix(URL_SCHEME_PREFIX) {
+        format!("zed://{rest}")
+    } else if let Some(rest) = url.strip_prefix(CLI_URL_SCHEME_PREFIX) {
+        format!("zed-cli://{rest}")
+    } else {
+        url
+    }
+}
+
+pub fn is_app_or_cli_url(url: &str) -> bool {
+    url.starts_with("zed://")
+        || url.starts_with("zed-cli://")
+        || url.starts_with(URL_SCHEME_PREFIX)
+        || url.starts_with(CLI_URL_SCHEME_PREFIX)
+}
+
+pub fn ipc_socket_file_name(channel: &str) -> String {
+    format!("{APP_NAME_LOWERCASE}-{channel}.sock")
+}
+// FORK:end
+
 /// A custom data directory override, set only by `set_custom_data_dir`.
 /// This is used to override the default data directory location.
 /// The directory will be created if it doesn't exist when set.
@@ -65,18 +116,18 @@ static CURRENT_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// On Windows, this is `%APPDATA%\Zed`.
 static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// Returns the relative path to the zed_server directory on the ssh host.
+/// Returns the relative path to the remote-server directory on the ssh host.
 pub fn remote_server_dir_relative() -> &'static RelPath {
     static CACHED: LazyLock<&'static RelPath> =
-        LazyLock::new(|| RelPath::from_unix_str(".zed_server").unwrap());
+        LazyLock::new(|| RelPath::from_unix_str(REMOTE_SERVER_DIR_NAME).unwrap());
     *CACHED
 }
 
 // Remove this once 223 goes stable
-/// Returns the relative path to the zed_wsl_server directory on the wsl host.
+/// Returns the relative path to the wsl remote-server directory on the wsl host.
 pub fn remote_wsl_server_dir_relative() -> &'static RelPath {
     static CACHED: LazyLock<&'static RelPath> =
-        LazyLock::new(|| RelPath::from_unix_str(".zed_wsl_server").unwrap());
+        LazyLock::new(|| RelPath::from_unix_str(REMOTE_WSL_SERVER_DIR_NAME).unwrap());
     *CACHED
 }
 
@@ -634,4 +685,36 @@ pub fn global_gitignore_path() -> Option<PathBuf> {
     GLOBAL_GITIGNORE_PATH
         .get_or_init(::ignore::gitignore::gitconfig_excludes_path)
         .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrite_peekado_schemes_onto_upstream() {
+        assert_eq!(
+            rewrite_to_upstream_url_scheme("peekado://file/tmp/x".into()),
+            "zed://file/tmp/x"
+        );
+        assert_eq!(
+            rewrite_to_upstream_url_scheme("peekado-cli://sock".into()),
+            "zed-cli://sock"
+        );
+        assert_eq!(
+            rewrite_to_upstream_url_scheme("zed://settings".into()),
+            "zed://settings"
+        );
+    }
+
+    #[test]
+    fn remote_server_dir_is_not_zed() {
+        assert_eq!(
+            remote_server_dir_relative().as_unix_str(),
+            REMOTE_SERVER_DIR_NAME
+        );
+        assert_ne!(REMOTE_SERVER_DIR_NAME, ".zed_server");
+        assert_ne!(REMOTE_SERVER_BINARY_PREFIX, "zed-remote-server");
+        assert_ne!(APP_NAME, "Zed");
+    }
 }

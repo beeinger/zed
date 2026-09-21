@@ -419,7 +419,9 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
             height: px(240.0),
         }),
         tabbing_identifier: if use_system_window_tabs {
-            Some(String::from("zed"))
+            // FORK:branding
+            Some(String::from(paths::APP_NAME_LOWERCASE))
+            // FORK:end
         } else {
             None
         },
@@ -1348,7 +1350,10 @@ fn register_actions(
                         Toast::new(
                             NotificationId::unique::<RegisterZedScheme>(),
                             format!(
-                                "zed:// links will now open in {}.",
+                                // FORK:branding
+                                "{}:// links will now open in {}.",
+                                paths::URL_SCHEME,
+                                // FORK:end
                                 ReleaseChannel::global(cx).display_name()
                             ),
                         ),
@@ -1784,7 +1789,9 @@ fn open_about_window(cx: &mut App) {
     cx.open_window(
         WindowOptions {
             titlebar: Some(TitlebarOptions {
-                title: Some("About Zed".into()),
+                // FORK:branding
+                title: Some("About Peekado".into()),
+                // FORK:end
                 appears_transparent: true,
                 traffic_light_position: Some(point(px(12.), px(12.))),
             }),

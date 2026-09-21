@@ -200,7 +200,10 @@ impl WslRemoteConnection {
         };
 
         let binary_name = format!(
-            "zed-remote-server-{}-{}",
+            // FORK:branding
+            "{}-{}-{}",
+            paths::REMOTE_SERVER_BINARY_PREFIX,
+            // FORK:end
             release_channel.dev_name(),
             version_str
         );
